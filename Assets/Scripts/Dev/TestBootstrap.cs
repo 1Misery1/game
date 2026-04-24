@@ -104,7 +104,7 @@ namespace Game.Dev
             go.transform.localScale = new Vector3(0.7f, 0.7f, 1f);
 
             var rb = go.AddComponent<Rigidbody2D>();
-            rb.gravityScale = 0f;
+            rb.bodyType = RigidbodyType2D.Kinematic;
             rb.freezeRotation = true;
 
             var col = go.AddComponent<CircleCollider2D>();
