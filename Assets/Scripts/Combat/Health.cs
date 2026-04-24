@@ -1,0 +1,55 @@
+using Game.Data;
+using UnityEngine;
+
+namespace Game.Combat
+{
+    [RequireComponent(typeof(CharacterStats))]
+    public class Health : MonoBehaviour, IDamageable
+    {
+        private CharacterStats _stats;
+        private float _current;
+
+        public float Current => _current;
+        public float Max => _stats != null ? _stats.Get(StatType.MaxHP) : 0f;
+        public float Ratio => Max > 0f ? _current / Max : 0f;
+
+        public System.Action<DamageInfo> OnDamaged;
+        public System.Action OnDied;
+
+        private void Awake()
+        {
+            _stats = GetComponent<CharacterStats>();
+            _stats.OnStatsChanged += ClampToMax;
+            _current = Max;
+        }
+
+        public void TakeDamage(DamageInfo info)
+        {
+            if (_current <= 0f) return;
+
+            float defense = _stats.Get(StatType.Defense);
+            float dmg = info.Type == DamageType.True
+                ? info.Amount
+                : Mathf.Max(1f, info.Amount - defense);
+
+            _current = Mathf.Max(0f, _current - dmg);
+            OnDamaged?.Invoke(info);
+
+            if (_current <= 0f)
+            {
+                OnDied?.Invoke();
+            }
+        }
+
+        public void Heal(float amount)
+        {
+            if (_current <= 0f) return;
+            _current = Mathf.Min(Max, _current + amount);
+        }
+
+        private void ClampToMax()
+        {
+            _current = Mathf.Min(_current, Max);
+        }
+    }
+}
