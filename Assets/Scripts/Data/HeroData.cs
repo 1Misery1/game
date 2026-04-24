@@ -9,6 +9,7 @@ namespace Game.Data
         [TextArea] public string description;
         public Sprite portrait;
         public GameObject prefab;
+        public Color tintColor = Color.white;
 
         [Header("Base Stats")]
         public float baseMaxHP = 100f;
