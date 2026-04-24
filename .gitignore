@@ -50,6 +50,9 @@ ExportedObj/
 # Unity3D generated file on crash reports
 sysinfo.txt
 
+# VS / Unity upgrade report
+UpgradeLog*.htm
+
 # Builds
 *.apk
 *.aab

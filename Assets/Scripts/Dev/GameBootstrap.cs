@@ -11,15 +11,28 @@ using UnityEngine;
 namespace Game.Dev
 {
     /// Single-scene state machine: Menu -> Playing -> Victory/Death -> Menu.
-    /// Replace DungeonBootstrap with this component on the Bootstrap GameObject.
+    /// Drives random dungeon generation across all 6 GDD room types.
     public class GameBootstrap : MonoBehaviour
     {
         [SerializeField] private float arenaHalfWidth = 8f;
         [SerializeField] private float arenaHalfHeight = 4.5f;
         [SerializeField] private int clearReward = 50;
+        [SerializeField] private int nonBossRoomCount = 4;
 
         private enum State { Menu, Playing, Victory, Death }
-        private static readonly string[] RoomSequence = { "Monster", "Talent", "Boss" };
+
+        // Room pool weights (Boss handled separately, always last)
+        private static readonly (string type, float weight)[] RoomPool =
+        {
+            ("Monster", 4.0f),
+            ("Talent",  2.0f),
+            ("Coin",    2.0f),
+            ("Shop",    1.5f),
+            ("Mystery", 1.5f),
+        };
+
+        public int RunCoins { get; private set; }
+        public int CurrentFloor { get; private set; } = 1;
 
         private State _state = State.Menu;
         private PersistentState _persistent;
@@ -30,7 +43,11 @@ namespace Game.Dev
         private GameObject _player;
         private Health _playerHealth;
         private GameObject _currentRoomRoot;
+        private List<string> _floorRooms = new List<string>();
         private int _currentRoomIndex;
+
+        private string _bannerMessage;
+        private float _bannerUntil;
 
         // --------------------------------------------------------------------
         //  Startup
@@ -100,6 +117,9 @@ namespace Game.Dev
 
             CleanupRun();
             _state = State.Playing;
+            RunCoins = 0;
+            CurrentFloor = 1;
+            _floorRooms = GenerateFloor();
             BuildArena();
             SpawnPlayer(hero);
             LoadRoom(0);
@@ -123,11 +143,33 @@ namespace Game.Dev
             if (_player != null) Destroy(_player);
             _playerHealth = null;
             _currentRoomIndex = 0;
+            _bannerMessage = null;
+            _bannerUntil = 0f;
         }
 
         // --------------------------------------------------------------------
-        //  Dungeon flow (same as DungeonBootstrap, with hero stats applied)
+        //  Floor generation
         // --------------------------------------------------------------------
+
+        private List<string> GenerateFloor()
+        {
+            float total = 0f;
+            foreach (var e in RoomPool) total += e.weight;
+
+            var rooms = new List<string>();
+            for (int i = 0; i < nonBossRoomCount; i++)
+            {
+                float roll = Random.value * total;
+                float acc = 0f;
+                foreach (var e in RoomPool)
+                {
+                    acc += e.weight;
+                    if (roll <= acc) { rooms.Add(e.type); break; }
+                }
+            }
+            rooms.Add("Boss");
+            return rooms;
+        }
 
         private void LoadRoom(int index)
         {
@@ -135,20 +177,28 @@ namespace Game.Dev
             _currentRoomIndex = index;
             if (_player != null) _player.transform.position = Vector3.zero;
 
-            if (index >= RoomSequence.Length)
+            if (index >= _floorRooms.Count)
             {
                 TriggerVictory();
                 return;
             }
 
-            _currentRoomRoot = new GameObject($"Room_{index}_{RoomSequence[index]}");
-            switch (RoomSequence[index])
+            var type = _floorRooms[index];
+            _currentRoomRoot = new GameObject($"Room_{index}_{type}");
+            switch (type)
             {
                 case "Monster": BuildMonsterRoom(); break;
                 case "Talent":  BuildTalentRoom();  break;
+                case "Coin":    BuildCoinRoom();    break;
+                case "Shop":    BuildShopRoom();    break;
+                case "Mystery": BuildMysteryRoom(); break;
                 case "Boss":    BuildBossRoom();    break;
             }
         }
+
+        // --------------------------------------------------------------------
+        //  Room builders
+        // --------------------------------------------------------------------
 
         private void BuildMonsterRoom()
         {
@@ -157,7 +207,7 @@ namespace Game.Dev
             {
                 float angle = i * Mathf.PI * 2f / 3f + Mathf.PI / 2f;
                 var pos = new Vector3(Mathf.Cos(angle) * 3.5f, Mathf.Sin(angle) * 2.2f, 0f);
-                var enemy = SpawnDummyEnemy(pos, 40f, 2f, 0.7f, new Color(0.9f, 0.3f, 0.3f));
+                var enemy = SpawnDummyEnemy(pos, 40f, 2f, 0.7f, new Color(0.9f, 0.3f, 0.3f), coinDrop: 4);
                 var hp = enemy.GetComponent<Health>();
                 hp.OnDied += () =>
                 {
@@ -173,7 +223,7 @@ namespace Game.Dev
             for (int i = 0; i < 2; i++)
             {
                 var pos = new Vector3(-2.5f + 5f * i, 2f, 0f);
-                var enemy = SpawnDummyEnemy(pos, 30f, 1f, 0.7f, new Color(0.95f, 0.55f, 0.25f));
+                var enemy = SpawnDummyEnemy(pos, 30f, 1f, 0.7f, new Color(0.95f, 0.55f, 0.25f), coinDrop: 3);
                 var hp = enemy.GetComponent<Health>();
                 hp.OnDied += () =>
                 {
@@ -201,7 +251,6 @@ namespace Game.Dev
                 talent.modifiers.Add(new StatModifierEntry { stat = def.stat, op = def.op, value = def.value });
                 pickups.Add(SpawnTalentOrb(talent, def.color));
             }
-
             for (int i = 0; i < pickups.Count; i++)
             {
                 pickups[i].transform.position = new Vector3(-3.5f + 3.5f * i, -2.2f, 0f);
@@ -221,19 +270,125 @@ namespace Game.Dev
             }
         }
 
-        private void ApplyTalentToPlayer(TalentData talent)
+        private void BuildCoinRoom()
+        {
+            int remaining = 5;
+            ShowBanner("COIN ROOM — collect all to proceed");
+            for (int i = 0; i < 5; i++)
+            {
+                var pos = new Vector3(
+                    Random.Range(-5f, 5f),
+                    Random.Range(-3f, 3f), 0f);
+                var coin = SpawnCoinPickup(pos, amount: 6);
+                coin.OnPicked += (amt) =>
+                {
+                    RunCoins += amt;
+                    remaining--;
+                    if (remaining <= 0) OpenDoorToNext();
+                };
+            }
+        }
+
+        private void BuildShopRoom()
+        {
+            ShowBanner("SHOP — walk up and press E to buy");
+            var defs = new (string name, string desc, StatType stat, ModifierOp op, float value, Color color, int price)[]
+            {
+                ("Power Up",   "+20% Attack",     StatType.Attack,    ModifierOp.PercentMul, 0.20f, new Color(1f, 0.4f, 0.4f), 25),
+                ("Swift Feet", "+25% Move Speed", StatType.MoveSpeed, ModifierOp.PercentMul, 0.25f, new Color(0.4f, 0.9f, 1f), 20),
+                ("Vigor",      "+50 Max HP",      StatType.MaxHP,     ModifierOp.Flat,       50f,   new Color(1f, 0.9f, 0.3f), 15),
+            };
+
+            for (int i = 0; i < defs.Length; i++)
+            {
+                var d = defs[i];
+                var talent = ScriptableObject.CreateInstance<TalentData>();
+                talent.talentName = d.name;
+                talent.description = d.desc;
+                talent.modifiers.Add(new StatModifierEntry { stat = d.stat, op = d.op, value = d.value });
+                var pos = new Vector3(-3.5f + 3.5f * i, 1f, 0f);
+                SpawnShopPedestal(pos, talent, d.color, d.price);
+            }
+
+            OpenDoorToNext(); // shopping is optional; leave whenever
+        }
+
+        private void BuildMysteryRoom()
+        {
+            ShowBanner("MYSTERY — approach the altar at your own risk");
+
+            var go = new GameObject("MysteryPedestal");
+            go.transform.SetParent(_currentRoomRoot.transform, true);
+            go.transform.position = Vector3.zero;
+            go.transform.localScale = new Vector3(0.8f, 0.8f, 1f);
+
+            var sr = go.AddComponent<SpriteRenderer>();
+            sr.sprite = MakeUnitSquareSprite();
+            sr.color = new Color(0.75f, 0.3f, 0.95f);
+            sr.sortingOrder = 7;
+
+            var col = go.AddComponent<CircleCollider2D>();
+            col.radius = 0.7f;
+            col.isTrigger = true;
+
+            var mystery = go.AddComponent<MysteryPedestal>();
+            mystery.OnResolved += HandleMystery;
+        }
+
+        private void HandleMystery(MysteryOutcome outcome)
+        {
+            switch (outcome)
+            {
+                case MysteryOutcome.Lucky:
+                    RunCoins += 25;
+                    ShowBanner("LUCKY!  +25 coins");
+                    break;
+                case MysteryOutcome.Gift:
+                    var gift = GenerateRandomTalent();
+                    ApplyTalentToPlayer(gift);
+                    ShowBanner($"GIFT!  Free talent: {gift.talentName}");
+                    break;
+                case MysteryOutcome.Heal:
+                    if (_playerHealth != null) _playerHealth.Heal(9999f);
+                    ShowBanner("HEALED to full!");
+                    break;
+                case MysteryOutcome.Cursed:
+                    ApplyCurse();
+                    ShowBanner("CURSED!  -15% Max HP");
+                    break;
+            }
+            OpenDoorToNext();
+        }
+
+        private void ApplyCurse()
         {
             if (_player == null) return;
             var stats = _player.GetComponent<CharacterStats>();
-            ModifierApplier.ApplyTalent(stats, talent);
-            var hp = _player.GetComponent<Health>();
-            if (hp != null) hp.Heal(9999f);
-            Debug.Log($"[Talent] picked: {talent.talentName}");
+            if (stats == null) return;
+            var curse = new StatModifier(StatType.MaxHP, ModifierOp.PercentMul, -0.15f, "Mystery_Curse");
+            stats.AddModifier(curse);
+        }
+
+        private TalentData GenerateRandomTalent()
+        {
+            var defs = new (string name, StatType stat, ModifierOp op, float value)[]
+            {
+                ("Power Up",   StatType.Attack,    ModifierOp.PercentMul, 0.20f),
+                ("Swift Feet", StatType.MoveSpeed, ModifierOp.PercentMul, 0.25f),
+                ("Vigor",      StatType.MaxHP,     ModifierOp.Flat,       50f),
+                ("Guardian",   StatType.Defense,   ModifierOp.Flat,       5f),
+            };
+            var d = defs[Random.Range(0, defs.Length)];
+            var t = ScriptableObject.CreateInstance<TalentData>();
+            t.talentName = d.name;
+            t.modifiers.Add(new StatModifierEntry { stat = d.stat, op = d.op, value = d.value });
+            return t;
         }
 
         private void BuildBossRoom()
         {
-            var boss = SpawnDummyEnemy(new Vector3(0f, 2.5f, 0f), 120f, 3f, 1.6f, new Color(0.55f, 0.08f, 0.12f));
+            ShowBanner("BOSS — kill or be killed");
+            var boss = SpawnDummyEnemy(new Vector3(0f, 2.5f, 0f), 120f, 3f, 1.6f, new Color(0.55f, 0.08f, 0.12f), coinDrop: 0);
             boss.name = "Boss";
             var stats = boss.GetComponent<CharacterStats>();
             stats.SetBase(StatType.MoveSpeed, 2.2f);
@@ -245,12 +400,25 @@ namespace Game.Dev
             ai.contactDamage = 12f;
 
             var hp = boss.GetComponent<Health>();
-            hp.OnDied += () => { _currentRoomIndex = RoomSequence.Length; TriggerVictory(); };
+            hp.OnDied += () => { _currentRoomIndex = _floorRooms.Count; TriggerVictory(); };
+        }
+
+        private void ApplyTalentToPlayer(TalentData talent)
+        {
+            if (_player == null) return;
+            var stats = _player.GetComponent<CharacterStats>();
+            ModifierApplier.ApplyTalent(stats, talent);
+            var hp = _player.GetComponent<Health>();
+            if (hp != null) hp.Heal(9999f);
+            Debug.Log($"[Talent] picked: {talent.talentName}");
         }
 
         private void OpenDoorToNext()
         {
             if (_currentRoomRoot == null) return;
+            // Don't open a second door
+            if (_currentRoomRoot.transform.Find("Door") != null) return;
+
             var doorGO = new GameObject("Door");
             doorGO.transform.SetParent(_currentRoomRoot.transform, true);
             doorGO.transform.position = new Vector3(0f, -arenaHalfHeight + 0.4f, 0f);
@@ -310,7 +478,7 @@ namespace Game.Dev
             _player.AddComponent<PlayerController>();
         }
 
-        private GameObject SpawnDummyEnemy(Vector3 pos, float maxHp, float defense, float size, Color color)
+        private GameObject SpawnDummyEnemy(Vector3 pos, float maxHp, float defense, float size, Color color, int coinDrop)
         {
             var go = new GameObject("Enemy");
             go.transform.SetParent(_currentRoomRoot.transform, true);
@@ -336,7 +504,11 @@ namespace Game.Dev
 
             var health = go.AddComponent<Health>();
             health.OnDamaged += _ => StartCoroutine(FlashRoutine(sr, Color.white, 0.08f));
-            health.OnDied += () => Destroy(go);
+            health.OnDied += () =>
+            {
+                if (coinDrop > 0) RunCoins += coinDrop;
+                Destroy(go);
+            };
             return go;
         }
 
@@ -358,6 +530,52 @@ namespace Game.Dev
             var pickup = go.AddComponent<TalentPickup>();
             pickup.talent = data;
             return pickup;
+        }
+
+        private CoinPickup SpawnCoinPickup(Vector3 pos, int amount)
+        {
+            var go = new GameObject("Coin");
+            go.transform.SetParent(_currentRoomRoot.transform, true);
+            go.transform.position = pos;
+            go.transform.localScale = new Vector3(0.3f, 0.3f, 1f);
+
+            var sr = go.AddComponent<SpriteRenderer>();
+            sr.sprite = MakeUnitSquareSprite();
+            sr.color = new Color(1f, 0.85f, 0.25f);
+            sr.sortingOrder = 7;
+
+            var col = go.AddComponent<CircleCollider2D>();
+            col.radius = 0.6f;
+            col.isTrigger = true;
+
+            var coin = go.AddComponent<CoinPickup>();
+            coin.amount = amount;
+            return coin;
+        }
+
+        private ShopPedestal SpawnShopPedestal(Vector3 pos, TalentData talent, Color color, int price)
+        {
+            var go = new GameObject("Shop_" + talent.talentName);
+            go.transform.SetParent(_currentRoomRoot.transform, true);
+            go.transform.position = pos;
+            go.transform.localScale = new Vector3(0.7f, 0.7f, 1f);
+
+            var sr = go.AddComponent<SpriteRenderer>();
+            sr.sprite = MakeUnitSquareSprite();
+            sr.color = color;
+            sr.sortingOrder = 7;
+
+            var col = go.AddComponent<CircleCollider2D>();
+            col.radius = 0.9f;
+            col.isTrigger = true;
+
+            var shop = go.AddComponent<ShopPedestal>();
+            shop.talent = talent;
+            shop.price = price;
+            shop.GetCoins = () => RunCoins;
+            shop.SpendCoins = amount => RunCoins -= amount;
+            shop.OnPurchased = t => ApplyTalentToPlayer(t);
+            return shop;
         }
 
         // --------------------------------------------------------------------
@@ -413,6 +631,12 @@ namespace Game.Dev
             if (sr != null) sr.color = original;
         }
 
+        private void ShowBanner(string message)
+        {
+            _bannerMessage = message;
+            _bannerUntil = Time.time + 3f;
+        }
+
         private static Sprite _cachedSquare;
         private static Sprite MakeUnitSquareSprite()
         {
@@ -463,7 +687,7 @@ namespace Game.Dev
                 case State.Menu:    DrawMenu(); break;
                 case State.Playing: DrawHUD();  break;
                 case State.Victory: DrawEndScreen("VICTORY!",  new Color(1f, 0.9f, 0.2f), true); break;
-                case State.Death:   DrawEndScreen("YOU DIED", new Color(1f, 0.3f, 0.3f), false); break;
+                case State.Death:   DrawEndScreen("YOU DIED",  new Color(1f, 0.3f, 0.3f), false); break;
             }
         }
 
@@ -473,24 +697,19 @@ namespace Game.Dev
 
             var title = new GUIStyle(GUI.skin.label)
             {
-                fontSize = 44,
-                alignment = TextAnchor.MiddleCenter,
-                fontStyle = FontStyle.Bold,
+                fontSize = 44, alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold,
                 normal = { textColor = new Color(0.95f, 0.95f, 0.4f) }
             };
             GUI.Label(new Rect(0, 30, Screen.width, 60), "2D ROGUELIKE", title);
 
             var info = new GUIStyle(GUI.skin.label)
             {
-                fontSize = 18,
-                alignment = TextAnchor.MiddleCenter,
+                fontSize = 18, alignment = TextAnchor.MiddleCenter,
                 normal = { textColor = Color.white }
             };
             GUI.Label(new Rect(0, 90, Screen.width, 28), $"Unlock Currency: {_persistent.UnlockCurrency}", info);
 
-            float cardW = 260f;
-            float cardH = 180f;
-            float gap = 16f;
+            float cardW = 260f, cardH = 180f, gap = 16f;
             float totalW = _heroes.Length * cardW + (_heroes.Length - 1) * gap;
             float startX = (Screen.width - totalW) * 0.5f;
             float y = 150f;
@@ -506,29 +725,15 @@ namespace Game.Dev
                          : selected  ? new Color(0.2f, 0.45f, 0.75f)
                                      : new Color(0.18f, 0.22f, 0.3f);
                 FillRect(rect, bg);
-
-                // Hero color swatch
                 FillRect(new Rect(rect.x + 10, rect.y + 10, 40, 40), h.tintColor);
 
-                var nameStyle = new GUIStyle(GUI.skin.label)
-                {
-                    fontSize = 22, fontStyle = FontStyle.Bold,
-                    normal = { textColor = Color.white }
-                };
+                var nameStyle = new GUIStyle(GUI.skin.label) { fontSize = 22, fontStyle = FontStyle.Bold, normal = { textColor = Color.white } };
                 GUI.Label(new Rect(rect.x + 60, rect.y + 10, cardW - 70, 30), h.heroName, nameStyle);
 
-                var descStyle = new GUIStyle(GUI.skin.label)
-                {
-                    fontSize = 12, wordWrap = true,
-                    normal = { textColor = new Color(0.85f, 0.85f, 0.85f) }
-                };
+                var descStyle = new GUIStyle(GUI.skin.label) { fontSize = 12, wordWrap = true, normal = { textColor = new Color(0.85f, 0.85f, 0.85f) } };
                 GUI.Label(new Rect(rect.x + 10, rect.y + 60, cardW - 20, 40), h.description, descStyle);
 
-                var statStyle = new GUIStyle(GUI.skin.label)
-                {
-                    fontSize = 12,
-                    normal = { textColor = new Color(0.8f, 0.9f, 1f) }
-                };
+                var statStyle = new GUIStyle(GUI.skin.label) { fontSize = 12, normal = { textColor = new Color(0.8f, 0.9f, 1f) } };
                 GUI.Label(new Rect(rect.x + 10, rect.y + 100, cardW - 20, 20),
                     $"HP {h.baseMaxHP:0}   ATK {h.baseAttack:0}   SPD {h.baseMoveSpeed:0.0}", statStyle);
 
@@ -555,11 +760,7 @@ namespace Game.Dev
                 StartRun();
             GUI.enabled = true;
 
-            var hint = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 12, alignment = TextAnchor.MiddleCenter,
-                normal = { textColor = new Color(0.6f, 0.6f, 0.7f) }
-            };
+            var hint = new GUIStyle(GUI.skin.label) { fontSize = 12, alignment = TextAnchor.MiddleCenter, normal = { textColor = new Color(0.6f, 0.6f, 0.7f) } };
             GUI.Label(new Rect(0, Screen.height - 28, Screen.width, 20),
                 "Save file: " + Application.persistentDataPath, hint);
         }
@@ -567,14 +768,26 @@ namespace Game.Dev
         private void DrawHUD()
         {
             var label = new GUIStyle(GUI.skin.label) { fontSize = 16, normal = { textColor = Color.white } };
-            GUI.Label(new Rect(10, 10, 480, 26),
-                $"Floor 1 · Room {_currentRoomIndex + 1}/{RoomSequence.Length} · {RoomSequence[_currentRoomIndex]}", label);
-            GUI.Label(new Rect(10, 34, 480, 26),
-                "WASD / Arrows to move · Space / LMB to attack · Walk into green door to advance", label);
+            string roomName = _currentRoomIndex < _floorRooms.Count ? _floorRooms[_currentRoomIndex] : "—";
+            GUI.Label(new Rect(10, 10, 560, 26),
+                $"Floor {CurrentFloor} · Room {_currentRoomIndex + 1}/{_floorRooms.Count} · {roomName}", label);
+            GUI.Label(new Rect(10, 34, 560, 26),
+                "WASD to move · Space/LMB attack · E to buy · Walk into green door", label);
             if (_playerHealth != null)
             {
-                GUI.Label(new Rect(10, 58, 480, 26),
-                    $"HP: {Mathf.CeilToInt(_playerHealth.Current)} / {Mathf.CeilToInt(_playerHealth.Max)}", label);
+                GUI.Label(new Rect(10, 58, 560, 26),
+                    $"HP: {Mathf.CeilToInt(_playerHealth.Current)} / {Mathf.CeilToInt(_playerHealth.Max)}   Coins: {RunCoins}",
+                    label);
+            }
+
+            if (Time.time < _bannerUntil && !string.IsNullOrEmpty(_bannerMessage))
+            {
+                var bannerStyle = new GUIStyle(GUI.skin.label)
+                {
+                    fontSize = 24, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter,
+                    normal = { textColor = new Color(1f, 0.9f, 0.4f) }
+                };
+                GUI.Label(new Rect(0, Screen.height * 0.18f, Screen.width, 40), _bannerMessage, bannerStyle);
             }
         }
 
@@ -584,20 +797,14 @@ namespace Game.Dev
 
             var bigStyle = new GUIStyle(GUI.skin.label)
             {
-                fontSize = 56,
-                alignment = TextAnchor.MiddleCenter,
-                fontStyle = FontStyle.Bold,
+                fontSize = 56, alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold,
                 normal = { textColor = color }
             };
             GUI.Label(new Rect(0, Screen.height * 0.25f, Screen.width, 80), title, bigStyle);
 
             if (victory)
             {
-                var reward = new GUIStyle(GUI.skin.label)
-                {
-                    fontSize = 20, alignment = TextAnchor.MiddleCenter,
-                    normal = { textColor = Color.white }
-                };
+                var reward = new GUIStyle(GUI.skin.label) { fontSize = 20, alignment = TextAnchor.MiddleCenter, normal = { textColor = Color.white } };
                 GUI.Label(new Rect(0, Screen.height * 0.38f, Screen.width, 40),
                     $"+{clearReward} Unlock Currency   (Total: {_persistent.UnlockCurrency})", reward);
             }
@@ -605,10 +812,8 @@ namespace Game.Dev
             float btnX = Screen.width / 2f - 140f;
             float btnY = Screen.height * 0.55f;
             var btnStyle = new GUIStyle(GUI.skin.button) { fontSize = 18 };
-
             if (GUI.Button(new Rect(btnX, btnY, 280, 42), "RESTART SAME HERO", btnStyle))
                 StartRun();
-
             if (GUI.Button(new Rect(btnX, btnY + 54, 280, 42), "BACK TO MAIN MENU", btnStyle))
                 EnterMenu();
         }
