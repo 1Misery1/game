@@ -89,6 +89,55 @@ namespace Game.Dev
             return go;
         }
 
+        // 毒蜘蛛：HP28, ATK10, DEF0, SPD6.0 | 接触毒素DoT，死后留毒池，3金币
+        public static GameObject SpawnPoisonSpider(Vector3 pos, Transform player, Transform parent)
+        {
+            var go = MakeBase("毒蜘蛛", pos, 0.5f, new Color(0.2f, 0.55f, 0.1f),
+                hp: 28f, atk: 10f, def: 0f, spd: 6.0f, parent: parent);
+            var tag = go.AddComponent<EnemyTag>(); tag.type = EnemyType.PoisonSpider;
+            var ai  = go.AddComponent<PoisonSpiderAI>();
+            ai.target             = player;
+            ai.stoppingDistance   = 0.7f;
+            ai.attackInterval     = 1.2f;
+            ai.contactDamage      = 10f;
+            ai.poisonTickDamage   = 5f;
+            ai.poisonTicks        = 4;
+            ai.poisonTickInterval = 0.6f;
+            return go;
+        }
+
+        // 暗影刺客：HP45, ATK22, DEF0, SPD5.0 | 潜行+瞬移爆发，5金币
+        public static GameObject SpawnShadowAssassin(Vector3 pos, Transform player, Transform parent)
+        {
+            var go = MakeBase("暗影刺客", pos, 0.6f, new Color(0.2f, 0.1f, 0.3f),
+                hp: 45f, atk: 22f, def: 0f, spd: 5.0f, parent: parent);
+            var tag = go.AddComponent<EnemyTag>(); tag.type = EnemyType.ShadowAssassin;
+            var ai  = go.AddComponent<ShadowAssassinAI>();
+            ai.target           = player;
+            ai.preferredMinDist = 5f;
+            ai.preferredMaxDist = 8f;
+            ai.blinkCooldown    = 5f;
+            ai.burstDamage      = 28f;
+            ai.retreatDistance  = 6f;
+            return go;
+        }
+
+        // 爆炎恶魔：HP35, ATK0, DEF0, SPD4.5 | 近身/死亡AOE爆炸，4金币
+        public static GameObject SpawnExplosiveDemon(Vector3 pos, Transform player, Transform parent)
+        {
+            var go = MakeBase("爆炎恶魔", pos, 0.65f, new Color(0.9f, 0.4f, 0.1f),
+                hp: 35f, atk: 0f, def: 0f, spd: 4.5f, parent: parent);
+            var tag = go.AddComponent<EnemyTag>(); tag.type = EnemyType.ExplosiveDemon;
+            var ai  = go.AddComponent<ExplosiveDemonAI>();
+            ai.target           = player;
+            ai.stoppingDistance = 0.8f;
+            ai.fuseRange        = 1.5f;
+            ai.fuseDuration     = 1.5f;
+            ai.explosionRadius  = 3f;
+            ai.explosionDamage  = 40f;
+            return go;
+        }
+
         // ── 精英 ──────────────────────────────────────────────────
 
         // 腐败士官：HP150, ATK20, DEF4, SPD3.5 | 双手剑AOE+光环，15金币
@@ -162,6 +211,105 @@ namespace Game.Dev
             return go;
         }
 
+        // 毒蛇祭司：HP130, ATK16, DEF0, SPD3.0 | 毒素光线+强化毒蜘蛛+毒液水坑，15金币
+        public static GameObject SpawnPoisonShaman(Vector3 pos, Transform player, Transform parent)
+        {
+            var go = MakeBase("毒蛇祭司", pos, 0.85f, new Color(0.3f, 0.7f, 0.2f),
+                hp: 130f, atk: 16f, def: 0f, spd: 3.0f, parent: parent);
+            var tag = go.AddComponent<EnemyTag>(); tag.type = EnemyType.PoisonShaman;
+            var ai  = go.AddComponent<PoisonShamanAI>();
+            ai.target             = player;
+            ai.preferredMinDist   = 5f;
+            ai.preferredMaxDist   = 8f;
+            ai.boltCooldown       = 3f;
+            ai.boltRange          = 8f;
+            ai.boltDamage         = 18f;
+            ai.poisonTickDamage   = 4f;
+            ai.poisonTicks        = 3;
+            ai.poisonTickInterval = 0.7f;
+            ai.spiderBuffCooldown = 6f;
+            ai.spiderAuraRadius   = 8f;
+            ai.spiderBuffDuration = 5f;
+            ai.puddleCooldown     = 8f;
+            return go;
+        }
+
+        // 死灵术士：HP140, ATK12, DEF2, SPD2.8 | 灵魂汲取回血+召唤骷髅，15金币
+        public static GameObject SpawnNecromancer(Vector3 pos, Transform player, Transform parent)
+        {
+            var go = MakeBase("死灵术士", pos, 0.8f, new Color(0.3f, 0.1f, 0.5f),
+                hp: 140f, atk: 12f, def: 2f, spd: 2.8f, parent: parent);
+            var tag = go.AddComponent<EnemyTag>(); tag.type = EnemyType.Necromancer;
+            var ai  = go.AddComponent<NecromancerAI>();
+            ai.target          = player;
+            ai.preferredMinDist = 5f;
+            ai.preferredMaxDist = 8f;
+            ai.drainCooldown   = 3f;
+            ai.drainRange      = 7f;
+            ai.drainDamage     = 18f;
+            ai.drainHealRatio  = 0.6f;
+            ai.summonCooldown  = 10f;
+            ai.summonCount_P1  = 1;
+            ai.summonCount_P2  = 2;
+            return go;
+        }
+
+        // 霜魂巫妖：HP600, ATK25, DEF5, SPD1.8 | 远程冰霜+冰锥齐射+冰霜新星，二阶段冷却缩短
+        public static GameObject SpawnFrostLich(Vector3 pos, Transform player, Transform parent)
+        {
+            var go = MakeBase("霜魂巫妖", pos, 1.1f, new Color(0.45f, 0.75f, 1f),
+                hp: 600f, atk: 25f, def: 5f, spd: 1.8f, parent: parent);
+            var tag = go.AddComponent<EnemyTag>(); tag.type = EnemyType.FrostLich;
+            go.GetComponent<SpriteRenderer>().sortingOrder = 6;
+
+            var ai = go.AddComponent<FrostLichAI>();
+            ai.target              = player;
+            ai.attackRange         = 8f;
+            ai.attackInterval      = 3f;
+            ai.attackDamage        = 20f;
+            ai.novaCooldown        = 5f;
+            ai.novaRadius          = 3.5f;
+            ai.novaDamage          = 20f;
+            ai.novaStun            = 0.5f;
+            ai.volleyCooldown      = 4f;
+            ai.volleyDamage        = 15f;
+            ai.volleyRange         = 10f;
+            ai.volleyCount_P1      = 3;
+            ai.volleyCount_P2      = 5;
+            ai.preferredMinDist    = 4f;
+            ai.preferredMaxDist    = 7f;
+            ai.phase2CdMultiplier  = 0.7f;
+            return go;
+        }
+
+        // 混沌领主：HP900, ATK45, DEF12, SPD3.0 | 近战横扫+混沌爆发+召唤军团，二阶段加速
+        public static GameObject SpawnChaosLord(Vector3 pos, Transform player, Transform parent)
+        {
+            var go = MakeBase("混沌领主", pos, 1.4f, new Color(0.5f, 0.1f, 0.7f),
+                hp: 900f, atk: 45f, def: 12f, spd: 3.0f, parent: parent);
+            var tag = go.AddComponent<EnemyTag>(); tag.type = EnemyType.ChaosLord;
+            go.GetComponent<SpriteRenderer>().sortingOrder = 6;
+
+            var ai = go.AddComponent<ChaosLordAI>();
+            ai.target               = player;
+            ai.attackRange          = 2.5f;
+            ai.attackInterval       = 1.5f;
+            ai.attackDamage         = 45f;
+            ai.attackKnockback      = 10f;
+            ai.burstCooldown        = 7f;
+            ai.burstRadius          = 5f;
+            ai.burstDamage          = 30f;
+            ai.burstKnockback       = 14f;
+            ai.burstPulses          = 3;
+            ai.summonCooldown       = 12f;
+            ai.summonCount_P1       = 2;
+            ai.summonCount_P2       = 3;
+            ai.phase2SpeedBonus     = 0.8f;
+            ai.phase2BurstCooldown  = 4.5f;
+            ai.phase2SummonCooldown = 8f;
+            return go;
+        }
+
         // ── 岩浆池 ────────────────────────────────────────────────
 
         public static GameObject SpawnLavaPool(Vector3 pos, float dps, float lifetime, float radius,
@@ -185,6 +333,15 @@ namespace Game.Dev
             lava.damagePerSecond = dps;
             lava.lifetime        = lifetime;
             lava.owner           = owner;
+            return go;
+        }
+
+        // 毒液水坑：绿色，复用 LavaPool 组件，真实伤害
+        public static GameObject SpawnPoisonPool(Vector3 pos, float dps, float lifetime, float radius,
+            Transform parent, GameObject owner)
+        {
+            var go = SpawnLavaPool(pos, dps, lifetime, radius, parent, owner);
+            if (go != null) go.GetComponent<SpriteRenderer>().color = new Color(0.15f, 0.75f, 0.1f, 0.7f);
             return go;
         }
 

@@ -12,6 +12,10 @@ namespace Game.Player
         public WeaponInstance[] Slots = new WeaponInstance[2];  // 武器槽，最多2把
         public int ActiveSlotIndex { get; private set; } = 0;
 
+        public event System.Action OnNormalAttackFired;
+        public event System.Action OnSkillFired;
+        public float BonusDamageMultiplier { get; set; } = 1f;
+
         private CharacterStats _stats;
         private float _lastAttackTime;
         private float _skillCooldownRemaining;
@@ -80,7 +84,10 @@ namespace Game.Player
             if (Time.time < _lastAttackTime + interval) return false;
 
             _lastAttackTime = Time.time;
-            ExecuteNormalAttack(weapon, aimDir);
+            float bonusMul = BonusDamageMultiplier;
+            BonusDamageMultiplier = 1f;
+            ExecuteNormalAttack(weapon, aimDir, bonusMul);
+            OnNormalAttackFired?.Invoke();
             return true;
         }
 
@@ -93,6 +100,7 @@ namespace Game.Player
 
             _skillCooldownRemaining = RawSkillCooldown;
             WeaponSkillExecutor.Execute(weapon, _stats, transform, aimDir);
+            OnSkillFired?.Invoke();
             return true;
         }
 
@@ -110,9 +118,9 @@ namespace Game.Player
             }
         }
 
-        private void ExecuteNormalAttack(WeaponInstance weapon, Vector2 aimDir)
+        private void ExecuteNormalAttack(WeaponInstance weapon, Vector2 aimDir, float bonusMul = 1f)
         {
-            float damage = weapon.EffectiveDamage + _stats.Get(StatType.Attack);
+            float damage = (weapon.EffectiveDamage + _stats.Get(StatType.Attack)) * bonusMul;
             bool isCrit = Random.value < _stats.Get(StatType.CritRate);
             if (isCrit) damage *= _stats.Get(StatType.CritDamage);
             var type = weapon.Data.damageType;

@@ -74,13 +74,39 @@ namespace Game.Dev
         {
             _heroes = new[]
             {
-                MakeHero("Warrior", "Balanced. Tanky melee bruiser.",    120f, 12f, 3f, 5f,   1.0f, 0,  new Color(0.4f, 0.85f, 1f)),
-                MakeHero("Rogue",   "Fast, fragile, relentless.",         80f, 10f, 0f, 7f,   1.3f, 30, new Color(0.8f, 1f,   0.5f)),
-                MakeHero("Mage",    "Glass cannon. Huge attack damage.",  70f, 20f, 0f, 4.5f, 0.8f, 60, new Color(1f,   0.6f, 1f)),
+                MakeHero("Warrior", "坚韧近战战士，擅长正面对抗。",
+                    120f, 12f, 3f, 5f,   1.0f, 0,   new Color(0.4f, 0.85f, 1f),
+                    HeroSkillType.WarCry,        10f, "战吼",
+                    HeroPassiveType.BattlefieldWill,  "战场意志"),
+
+                MakeHero("Ranger", "敏捷游侠，连击可叠加攻击加成。",
+                    85f,  11f, 0f, 7f,   1.3f, 30,  new Color(0.8f, 1f,   0.5f),
+                    HeroSkillType.ShadowStep,    6f,  "影步",
+                    HeroPassiveType.ComboStrike,      "连击"),
+
+                MakeHero("Mage", "玻璃炮，技能后下次普攻伤害翻倍。",
+                    70f,  20f, 0f, 4.5f, 0.8f, 60,  new Color(1f,   0.6f, 1f),
+                    HeroSkillType.ArcaneSurge,   8f,  "奥术迸发",
+                    HeroPassiveType.ManaAmplification,"魔力增幅"),
+
+                MakeHero("Paladin", "圣骑士，击杀敌人回复5HP。",
+                    130f, 10f, 5f, 4.5f, 0.9f, 100, new Color(1f,   0.9f, 0.4f),
+                    HeroSkillType.HolyLight,     12f, "神圣之光",
+                    HeroPassiveType.SacredOath,       "神圣誓约"),
+
+                MakeHero("Hunter", "猎人，永久爆击率+20%、爆伤+30%。",
+                    80f,  15f, 0f, 6f,   1.1f, 150, new Color(1f,   0.55f, 0.3f),
+                    HeroSkillType.PrecisionShot, 7f,  "精准射击",
+                    HeroPassiveType.EagleEye,         "鹰眼"),
             };
         }
 
-        private HeroData MakeHero(string name, string desc, float hp, float atk, float def, float ms, float asp, int cost, Color tint)
+        private HeroData MakeHero(
+            string name, string desc,
+            float hp, float atk, float def, float ms, float asp,
+            int cost, Color tint,
+            HeroSkillType skillType, float skillCd, string skillName,
+            HeroPassiveType passiveType, string passiveName)
         {
             var h = ScriptableObject.CreateInstance<HeroData>();
             h.heroName          = name;
@@ -93,6 +119,11 @@ namespace Game.Dev
             h.unlockCost        = cost;
             h.tintColor         = tint;
             h.unlockedByDefault = cost == 0;
+            h.heroSkillType     = skillType;
+            h.heroSkillCooldown = skillCd;
+            h.heroSkillName     = skillName;
+            h.heroPassiveType   = passiveType;
+            h.heroPassiveName   = passiveName;
             return h;
         }
 
@@ -232,36 +263,94 @@ namespace Game.Dev
         private GameObject SpawnRandomNormalEnemy(Vector3 pos, System.Action onDied)
         {
             if (_player == null) return null;
-            int pick = Random.Range(0, 6);
+            int pick = Random.Range(0, 8);
             int coins;
             GameObject enemy;
             var p    = _player.transform;
             var root = _currentRoomRoot.transform;
             switch (pick)
             {
-                case 0: enemy = EnemyFactory.SpawnSkeleton(pos, p, root);    coins = 3; break;
-                case 1: enemy = EnemyFactory.SpawnSoldier(pos, p, root);     coins = 4; break;
-                case 2: enemy = EnemyFactory.SpawnArcher(pos, p, root);      coins = 4; break;
-                case 3: enemy = EnemyFactory.SpawnBat(pos, p, root);         coins = 3; break;
-                case 4: enemy = EnemyFactory.SpawnShieldGuard(pos, p, root); coins = 6; break;
-                default:enemy = EnemyFactory.SpawnSkeleton(pos, p, root);    coins = 3; break;
+                case 0:  enemy = EnemyFactory.SpawnSkeleton(pos, p, root);        coins = 3; break;
+                case 1:  enemy = EnemyFactory.SpawnSoldier(pos, p, root);         coins = 4; break;
+                case 2:  enemy = EnemyFactory.SpawnArcher(pos, p, root);          coins = 4; break;
+                case 3:  enemy = EnemyFactory.SpawnBat(pos, p, root);             coins = 3; break;
+                case 4:  enemy = EnemyFactory.SpawnShieldGuard(pos, p, root);     coins = 6; break;
+                case 5:  enemy = EnemyFactory.SpawnPoisonSpider(pos, p, root);    coins = 3; break;
+                case 6:  enemy = EnemyFactory.SpawnShadowAssassin(pos, p, root);  coins = 5; break;
+                default: enemy = EnemyFactory.SpawnExplosiveDemon(pos, p, root);  coins = 4; break;
             }
-            ScaleEnemyStats(enemy, FloorScale);
+            RegisterEnemy(enemy, coins, onDied);
+            return enemy;
+        }
 
+        // 通用：挂载视觉回调 + 特殊死亡效果 + 金币/死亡事件
+        private void RegisterEnemy(GameObject enemy, int baseCoins, System.Action onDied)
+        {
+            ScaleEnemyStats(enemy, FloorScale);
+            AttachVisualCallbacks(enemy);
+            AttachSpecialDeathEffect(enemy);
+            int c  = Mathf.RoundToInt(baseCoins * FloorScale);
+            var hp = enemy.GetComponent<Health>();
+            hp.OnDied += () => { RunCoins += c; PlayerPassiveEvents.RaisePlayerKilledEnemy(); };
+            hp.OnDied += () => Destroy(enemy);
+            hp.OnDied += onDied;
+        }
+
+        // 受击：白色闪光 + 浮动伤害数字
+        private void AttachVisualCallbacks(GameObject enemy)
+        {
             var sr = enemy.GetComponent<SpriteRenderer>();
             var hp = enemy.GetComponent<Health>();
             var tr = enemy.transform;
-            if (sr != null)
-                hp.OnDamaged += dmg =>
+            if (sr == null) return;
+            hp.OnDamaged += dmg =>
+            {
+                StartCoroutine(FlashRoutine(sr, Color.white, 0.06f));
+                if (tr != null) DamageNumbers.Instance?.Show(tr.position, dmg.Amount, dmg.IsCrit);
+            };
+        }
+
+        // 特殊死亡效果（在 Destroy 之前触发，可安全读取 transform）
+        private void AttachSpecialDeathEffect(GameObject enemy)
+        {
+            var tag = enemy.GetComponent<EnemyTag>();
+            var hp  = enemy.GetComponent<Health>();
+            if (tag == null) return;
+
+            switch (tag.type)
+            {
+                case EnemyType.PoisonSpider:
+                    var spiderRoot = _currentRoomRoot;
+                    hp.OnDied += () =>
+                    {
+                        if (enemy == null) return;
+                        var parent = spiderRoot != null ? spiderRoot.transform : null;
+                        EnemyFactory.SpawnPoisonPool(enemy.transform.position, 4f, 3f, 1f, parent, null);
+                    };
+                    break;
+
+                case EnemyType.ExplosiveDemon:
+                    var demonAI = enemy.GetComponent<ExplosiveDemonAI>();
+                    hp.OnDied += () =>
+                    {
+                        if (demonAI != null && demonAI.HasExploded) return;
+                        if (enemy != null) DoExplosionAt(enemy.transform.position);
+                    };
+                    break;
+            }
+        }
+
+        private void DoExplosionAt(Vector3 pos)
+        {
+            foreach (var col in Physics2D.OverlapCircleAll(pos, 3f))
+            {
+                if (col.GetComponent<EnemyTag>() != null) continue; // 不伤害其他敌人
+                col.GetComponent<IDamageable>()?.TakeDamage(new DamageInfo
                 {
-                    StartCoroutine(FlashRoutine(sr, Color.white, 0.06f));
-                    if (tr != null) DamageNumbers.Instance?.Show(tr.position, dmg.Amount, dmg.IsCrit);
-                };
-            int c = Mathf.RoundToInt(coins * FloorScale);
-            hp.OnDied += () => RunCoins += c;
-            hp.OnDied += () => Destroy(enemy);
-            hp.OnDied += onDied;
-            return enemy;
+                    Amount = 40f, Type = DamageType.True, Source = null
+                });
+            }
+            DamageNumbers.Instance?.Show(pos, 40f, false);
         }
 
         private void BuildMonsterRoom()
@@ -277,55 +366,84 @@ namespace Game.Dev
 
         private void BuildEliteRoom()
         {
-            ShowBanner("精英房间 — 小心精英敌人！");
-            int remaining = 3;
-
             if (_player == null) return;
+            int remaining = 3; // 精英 + 2初始小怪
+            System.Action dec = () => { remaining--; if (remaining <= 0) OpenDoorToNext(); };
 
-            bool isCommander = Random.value > 0.5f;
-            GameObject elite;
-            if (isCommander)
+            switch (Random.Range(0, 4))
             {
-                elite = EnemyFactory.SpawnCommander(new Vector3(0f, 2f, 0f), _player.transform, _currentRoomRoot.transform);
+                case 0: EliteRoom_Commander(dec);    break;
+                case 1: EliteRoom_Witch(dec);        break;
+                case 2: EliteRoom_PoisonShaman(dec); break;
+                case 3: EliteRoom_Necromancer(dec);  break;
             }
-            else
+        }
+
+        // 腐败士官 + 2腐败盾士 — 光环让盾卫极度坚韧
+        private void EliteRoom_Commander(System.Action dec)
+        {
+            ShowBanner("精英 — 腐败士官领军！战斗光环已强化盾卫！");
+            var p    = _player.transform;
+            var root = _currentRoomRoot.transform;
+            var elite = EnemyFactory.SpawnCommander(new Vector3(0f, 2f, 0f), p, root);
+            RegisterEnemy(elite, 15, dec);
+            Vector3[] pos = { new Vector3(-3f, -1.5f, 0f), new Vector3(3f, -1.5f, 0f) };
+            foreach (var mp in pos)
+                RegisterEnemy(EnemyFactory.SpawnShieldGuard(mp, p, root), 6, dec);
+        }
+
+        // 女巫 + 2初始蝙蝠 — 女巫持续召唤蝙蝠群
+        private void EliteRoom_Witch(System.Action dec)
+        {
+            ShowBanner("精英 — 恶毒女巫降临！蝙蝠群随时增援！");
+            var p    = _player.transform;
+            var root = _currentRoomRoot.transform;
+            var elite = EnemyFactory.SpawnWitch(new Vector3(0f, 2f, 0f), p, root, spawnPos =>
             {
-                elite = EnemyFactory.SpawnWitch(new Vector3(0f, 2f, 0f), _player.transform, _currentRoomRoot.transform,
-                    spawnPos =>
-                    {
-                        var bat  = EnemyFactory.SpawnBat(spawnPos, _player.transform, _currentRoomRoot.transform);
-                        ScaleEnemyStats(bat, FloorScale);
-                        var bHp = bat.GetComponent<Health>();
-                        var bSr = bat.GetComponent<SpriteRenderer>();
-                        var bTr = bat.transform;
-                        if (bSr != null)
-                            bHp.OnDamaged += dmg =>
-                            {
-                                StartCoroutine(FlashRoutine(bSr, Color.white, 0.06f));
-                                if (bTr != null) DamageNumbers.Instance?.Show(bTr.position, dmg.Amount, dmg.IsCrit);
-                            };
-                        bHp.OnDied += () => Destroy(bat);
-                        return bat;
-                    });
-            }
+                var bat = EnemyFactory.SpawnBat(spawnPos, p, root);
+                RegisterEnemy(bat, 3, () => { }); // 召唤蝙蝠不计入房间计数
+                return bat;
+            });
+            RegisterEnemy(elite, 15, dec);
+            Vector3[] pos = { new Vector3(-3f, -1.5f, 0f), new Vector3(3f, -1.5f, 0f) };
+            foreach (var mp in pos)
+                RegisterEnemy(EnemyFactory.SpawnBat(mp, p, root), 3, dec);
+        }
 
-            ScaleEnemyStats(elite, FloorScale);
-            var eliteSr = elite.GetComponent<SpriteRenderer>();
-            var eliteHp = elite.GetComponent<Health>();
-            var eliteTr = elite.transform;
-            if (eliteSr != null)
-                eliteHp.OnDamaged += dmg =>
-                {
-                    StartCoroutine(FlashRoutine(eliteSr, Color.white, 0.06f));
-                    if (eliteTr != null) DamageNumbers.Instance?.Show(eliteTr.position, dmg.Amount, dmg.IsCrit);
-                };
-            int eliteCoins = Mathf.RoundToInt(15 * FloorScale);
-            eliteHp.OnDied += () => { RunCoins += eliteCoins; Destroy(elite); };
-            eliteHp.OnDied += () => { remaining--; if (remaining <= 0) OpenDoorToNext(); };
+        // 毒蛇祭司 + 2毒蜘蛛 — 祭司持续强化蜘蛛，投放毒池封路
+        private void EliteRoom_PoisonShaman(System.Action dec)
+        {
+            ShowBanner("精英 — 毒蛇祭司现身！毒蜘蛛已受到祝福强化！");
+            var p    = _player.transform;
+            var root = _currentRoomRoot.transform;
+            var elite = EnemyFactory.SpawnPoisonShaman(new Vector3(0f, 2f, 0f), p, root);
+            var ai    = elite.GetComponent<PoisonShamanAI>();
+            ai.SpawnPoisonPuddleCallback = pos =>
+                EnemyFactory.SpawnPoisonPool(pos, 5f, 4f, 1.5f, root, elite);
+            RegisterEnemy(elite, 15, dec);
+            Vector3[] pos2 = { new Vector3(-3f, -1.5f, 0f), new Vector3(3f, -1.5f, 0f) };
+            foreach (var mp in pos2)
+                RegisterEnemy(EnemyFactory.SpawnPoisonSpider(mp, p, root), 3, dec);
+        }
 
-            Vector3[] minionPos = { new Vector3(-3f, -1.5f, 0f), new Vector3(3f, -1.5f, 0f) };
-            for (int i = 0; i < 2; i++)
-                SpawnRandomNormalEnemy(minionPos[i], () => { remaining--; if (remaining <= 0) OpenDoorToNext(); });
+        // 死灵术士 + 2骷髅 — 术士回血自保，不断召唤骷髅援军
+        private void EliteRoom_Necromancer(System.Action dec)
+        {
+            ShowBanner("精英 — 死灵术士登场！骷髅军团不断复活！");
+            var p    = _player.transform;
+            var root = _currentRoomRoot.transform;
+            var elite = EnemyFactory.SpawnNecromancer(new Vector3(0f, 2f, 0f), p, root);
+            var ai    = elite.GetComponent<NecromancerAI>();
+            ai.SpawnSkeletonCallback = pos =>
+            {
+                var sk = EnemyFactory.SpawnSkeleton(pos, p, root);
+                RegisterEnemy(sk, 3, () => { }); // 召唤骷髅不计入房间计数
+                return sk;
+            };
+            RegisterEnemy(elite, 15, dec);
+            Vector3[] pos2 = { new Vector3(-3f, -1.5f, 0f), new Vector3(3f, -1.5f, 0f) };
+            foreach (var mp in pos2)
+                RegisterEnemy(EnemyFactory.SpawnSkeleton(mp, p, root), 3, dec);
         }
 
         private void BuildTalentRoom()
@@ -494,18 +612,54 @@ namespace Game.Dev
 
         private void BuildBossRoom()
         {
-            ShowBanner("BOSS — 地狱巨人降临！");
             if (_player == null) return;
+            switch (CurrentFloor)
+            {
+                case 1:  BuildFloor1Boss(); break;
+                case 2:  BuildFloor2Boss(); break;
+                default: BuildFloor3Boss(); break;
+            }
+        }
 
+        // 第一层：地狱巨人 — 岩浆 + 重踏
+        private void BuildFloor1Boss()
+        {
+            ShowBanner("BOSS — 地狱巨人降临！");
             var boss   = EnemyFactory.SpawnHellGiant(new Vector3(0f, 2.5f, 0f),
                              _player.transform, _currentRoomRoot.transform, null);
             var bossAI = boss.GetComponent<HellGiantAI>();
             var roomTr = _currentRoomRoot.transform;
             bossAI.SpawnLavaCallback = (pos, dps, lt, r) =>
                 EnemyFactory.SpawnLavaPool(pos, dps, lt, r, roomTr, boss);
-
             ScaleEnemyStats(boss, FloorScale);
+            RegisterBossEvents(boss);
+        }
 
+        // 第二层：霜魂巫妖 — 冰霜新星 + 冰锥齐射
+        private void BuildFloor2Boss()
+        {
+            ShowBanner("BOSS — 霜魂巫妖出现！当心冰霜！");
+            var boss = EnemyFactory.SpawnFrostLich(new Vector3(0f, 2.5f, 0f),
+                           _player.transform, _currentRoomRoot.transform);
+            ScaleEnemyStats(boss, FloorScale);
+            RegisterBossEvents(boss);
+        }
+
+        // 第三层：混沌领主 — 混沌爆发 + 召唤军团
+        private void BuildFloor3Boss()
+        {
+            ShowBanner("BOSS — 混沌领主现身！终局之战！");
+            var boss   = EnemyFactory.SpawnChaosLord(new Vector3(0f, 2.5f, 0f),
+                             _player.transform, _currentRoomRoot.transform);
+            var bossAI = boss.GetComponent<ChaosLordAI>();
+            bossAI.SpawnMinionCallback = pos => SpawnRandomNormalEnemy(pos, () => { });
+            ScaleEnemyStats(boss, FloorScale);
+            RegisterBossEvents(boss);
+        }
+
+        // Boss通用事件：受击闪烁、浮动伤害、死亡结算
+        private void RegisterBossEvents(GameObject boss)
+        {
             var bossSr = boss.GetComponent<SpriteRenderer>();
             var bossHp = boss.GetComponent<Health>();
             var bossTr = boss.transform;
@@ -517,6 +671,7 @@ namespace Game.Dev
                 };
             bossHp.OnDied += () =>
             {
+                PlayerPassiveEvents.RaisePlayerKilledEnemy();
                 Destroy(boss);
                 if (CurrentFloor >= maxFloor) TriggerVictory();
                 else                          TriggerFloorComplete();
@@ -598,6 +753,20 @@ namespace Game.Dev
                 TriggerDeath();
                 Destroy(_player);
             };
+
+            if (hero.heroSkillType != HeroSkillType.None)
+            {
+                var heroSkill = _player.AddComponent<HeroActiveSkillHandler>();
+                heroSkill.SkillType = hero.heroSkillType;
+                heroSkill.Cooldown  = hero.heroSkillCooldown;
+                heroSkill.SkillName = hero.heroSkillName;
+            }
+
+            if (hero.heroPassiveType != HeroPassiveType.None)
+            {
+                var heroPassive = _player.AddComponent<HeroPassiveHandler>();
+                heroPassive.PassiveType = hero.heroPassiveType;
+            }
 
             var weaponHandler = _player.AddComponent<PlayerWeaponHandler>();
             _player.AddComponent<PlayerController>();
@@ -870,10 +1039,10 @@ namespace Game.Dev
             };
             GUI.Label(new Rect(0, 90, Screen.width, 28), $"Unlock Currency: {_persistent.UnlockCurrency}", info);
 
-            float cardW = 260f, cardH = 180f, gap = 16f;
+            float cardW = 195f, cardH = 210f, gap = 10f;
             float totalW = _heroes.Length * cardW + (_heroes.Length - 1) * gap;
             float startX = (Screen.width - totalW) * 0.5f;
-            float y      = 150f;
+            float y      = 135f;
 
             for (int i = 0; i < _heroes.Length; i++)
             {
@@ -886,29 +1055,37 @@ namespace Game.Dev
                          : selected  ? new Color(0.2f, 0.45f, 0.75f)
                                      : new Color(0.18f, 0.22f, 0.3f);
                 FillRect(rect, bg);
-                FillRect(new Rect(rect.x + 10, rect.y + 10, 40, 40), h.tintColor);
+                FillRect(new Rect(rect.x + 8, rect.y + 8, 34, 34), h.tintColor);
 
-                var nameStyle = new GUIStyle(GUI.skin.label) { fontSize = 22, fontStyle = FontStyle.Bold, normal = { textColor = Color.white } };
-                GUI.Label(new Rect(rect.x + 60, rect.y + 10, cardW - 70, 30), h.heroName, nameStyle);
+                var nameStyle = new GUIStyle(GUI.skin.label) { fontSize = 18, fontStyle = FontStyle.Bold, normal = { textColor = Color.white } };
+                GUI.Label(new Rect(rect.x + 50, rect.y + 8, cardW - 58, 26), h.heroName, nameStyle);
 
-                var descStyle = new GUIStyle(GUI.skin.label) { fontSize = 12, wordWrap = true, normal = { textColor = new Color(0.85f, 0.85f, 0.85f) } };
-                GUI.Label(new Rect(rect.x + 10, rect.y + 60, cardW - 20, 40), h.description, descStyle);
+                var descStyle = new GUIStyle(GUI.skin.label) { fontSize = 11, wordWrap = true, normal = { textColor = new Color(0.85f, 0.85f, 0.85f) } };
+                GUI.Label(new Rect(rect.x + 8, rect.y + 48, cardW - 16, 36), h.description, descStyle);
 
-                var statStyle = new GUIStyle(GUI.skin.label) { fontSize = 12, normal = { textColor = new Color(0.8f, 0.9f, 1f) } };
-                GUI.Label(new Rect(rect.x + 10, rect.y + 100, cardW - 20, 20),
-                    $"HP {h.baseMaxHP:0}   ATK {h.baseAttack:0}   SPD {h.baseMoveSpeed:0.0}", statStyle);
+                var statStyle = new GUIStyle(GUI.skin.label) { fontSize = 11, normal = { textColor = new Color(0.8f, 0.9f, 1f) } };
+                GUI.Label(new Rect(rect.x + 8, rect.y + 88, cardW - 16, 18),
+                    $"HP {h.baseMaxHP:0}  ATK {h.baseAttack:0}  SPD {h.baseMoveSpeed:0.0}", statStyle);
 
-                var btnRect = new Rect(rect.x + 10, rect.y + cardH - 40, cardW - 20, 30);
+                var skillStyle = new GUIStyle(GUI.skin.label) { fontSize = 11, normal = { textColor = new Color(1f, 0.85f, 0.4f) } };
+                GUI.Label(new Rect(rect.x + 8, rect.y + 108, cardW - 16, 18),
+                    $"[F] {h.heroSkillName}  CD:{h.heroSkillCooldown:0}s", skillStyle);
+
+                var passiveStyle = new GUIStyle(GUI.skin.label) { fontSize = 11, normal = { textColor = new Color(0.6f, 1f, 0.7f) } };
+                GUI.Label(new Rect(rect.x + 8, rect.y + 126, cardW - 16, 18),
+                    $"[被动] {h.heroPassiveName}", passiveStyle);
+
+                var btnRect = new Rect(rect.x + 8, rect.y + cardH - 36, cardW - 16, 28);
                 if (unlocked)
                 {
-                    if (GUI.Button(btnRect, selected ? "✓ SELECTED" : "SELECT"))
+                    if (GUI.Button(btnRect, selected ? "✓ 已选择" : "选择"))
                         _selectedHeroIndex = i;
                 }
                 else
                 {
                     bool affordable = _persistent.UnlockCurrency >= h.unlockCost;
                     GUI.enabled = affordable;
-                    if (GUI.Button(btnRect, $"UNLOCK ({h.unlockCost})"))
+                    if (GUI.Button(btnRect, $"解锁 ({h.unlockCost})"))
                         _persistent.TryUnlockHero(h.heroName, h.unlockCost);
                     GUI.enabled = true;
                 }
@@ -917,7 +1094,7 @@ namespace Game.Dev
             var startBtn = new GUIStyle(GUI.skin.button) { fontSize = 22, fontStyle = FontStyle.Bold };
             bool canStart = _selectedHeroIndex >= 0 && _persistent.IsHeroUnlocked(_heroes[_selectedHeroIndex].heroName);
             GUI.enabled = canStart;
-            if (GUI.Button(new Rect(Screen.width / 2f - 140, y + cardH + 30, 280, 54), "START RUN", startBtn))
+            if (GUI.Button(new Rect(Screen.width / 2f - 140, y + cardH + 20, 280, 50), "开始冒险", startBtn))
                 StartRun();
             GUI.enabled = true;
 
@@ -932,14 +1109,15 @@ namespace Game.Dev
             string roomName = _currentRoomIndex < _floorRooms.Count ? _floorRooms[_currentRoomIndex] : "—";
             GUI.Label(new Rect(10, 10, 700, 26),
                 $"Floor {CurrentFloor}/{maxFloor} · Room {_currentRoomIndex + 1}/{_floorRooms.Count} · {roomName} · 难度 ×{FloorScale:0.0}", label);
-            GUI.Label(new Rect(10, 34, 700, 26),
-                "WASD移动 · Space/左键普攻 · R/右键技能 · Q切换武器 · E购买/装备 · 走入绿门进入下一间", label);
+            GUI.Label(new Rect(10, 34, 800, 26),
+                "WASD移动 · Space/左键普攻 · R/右键武器技能 · F英雄技能 · Q切换武器 · E购买/装备 · 绿门进入下一间", label);
             if (_playerHealth != null)
             {
                 GUI.Label(new Rect(10, 58, 560, 26),
                     $"HP: {Mathf.CeilToInt(_playerHealth.Current)} / {Mathf.CeilToInt(_playerHealth.Max)}   金币: {RunCoins}",
                     label);
             }
+            DrawHeroSkillHUD(label);
 
             DrawWeaponHUD();
 
@@ -1023,6 +1201,36 @@ namespace Game.Dev
                 float fill = 1f - handler.SkillCooldownRatio;
                 FillRect(new Rect(panelX, barY, barW * fill, 8), ready ? new Color(0.3f, 0.9f, 0.3f) : new Color(0.3f, 0.5f, 1f));
             }
+        }
+
+        private void DrawHeroSkillHUD(GUIStyle baseLabel)
+        {
+            if (_player == null) return;
+            var skillHandler = _player.GetComponent<HeroActiveSkillHandler>();
+            if (skillHandler == null || skillHandler.SkillType == HeroSkillType.None) return;
+
+            float panelX = 10f;
+            float panelY = 82f;
+            float panelW = 220f;
+            float panelH = 38f;
+
+            FillRect(new Rect(panelX - 4, panelY - 2, panelW + 8, panelH + 4), new Color(0f, 0f, 0f, 0.5f));
+
+            bool   ready      = skillHandler.IsReady;
+            float  cdRem      = skillHandler.CooldownRemaining;
+            string skillLabel = ready
+                ? $"[F] {skillHandler.SkillName}  就绪!"
+                : $"[F] {skillHandler.SkillName}  CD: {cdRem:0.0}s";
+
+            Color skillColor = ready ? new Color(1f, 0.85f, 0.1f) : new Color(0.7f, 0.65f, 0.4f);
+            var style = new GUIStyle(baseLabel) { fontSize = 13, normal = { textColor = skillColor } };
+            GUI.Label(new Rect(panelX, panelY, panelW, 20), skillLabel, style);
+
+            float barW = panelW;
+            FillRect(new Rect(panelX, panelY + 20f, barW, 8), new Color(0.3f, 0.3f, 0.3f));
+            float fill = 1f - skillHandler.CooldownRatio;
+            FillRect(new Rect(panelX, panelY + 20f, barW * fill, 8),
+                ready ? new Color(1f, 0.8f, 0.1f) : new Color(0.5f, 0.45f, 0.2f));
         }
 
         private void DrawFloorComplete()

@@ -12,10 +12,11 @@ namespace Game.Player
         [SerializeField] private Color skillFlashColor   = new Color(0.5f, 0.5f, 1f);
         [SerializeField] private Color switchFlashColor  = new Color(0.4f, 1f, 0.8f);
 
-        private Rigidbody2D        _rb;
-        private CharacterStats     _stats;
-        private PlayerWeaponHandler _weapons;
-        private SpriteRenderer     _sr;
+        private Rigidbody2D           _rb;
+        private CharacterStats        _stats;
+        private PlayerWeaponHandler   _weapons;
+        private HeroActiveSkillHandler _heroSkill;
+        private SpriteRenderer        _sr;
         private Color _baseColor;
         private Color _flashColor;
         private float _flashUntil;
@@ -31,9 +32,10 @@ namespace Game.Player
             _rb = GetComponent<Rigidbody2D>();
             _rb.gravityScale = 0f;
             _rb.freezeRotation = true;
-            _stats   = GetComponent<CharacterStats>();
-            _weapons = GetComponent<PlayerWeaponHandler>();
-            _sr      = GetComponent<SpriteRenderer>();
+            _stats     = GetComponent<CharacterStats>();
+            _weapons   = GetComponent<PlayerWeaponHandler>();
+            _heroSkill = GetComponent<HeroActiveSkillHandler>();
+            _sr        = GetComponent<SpriteRenderer>();
             if (_sr != null) _baseColor = _sr.color;
         }
 
@@ -52,6 +54,8 @@ namespace Game.Player
                 ((kb    != null && kb.rKey.wasPressedThisFrame) ||
                  (mouse != null && mouse.rightButton.wasPressedThisFrame));
 
+            bool heroSkillPressed = !stunned && kb != null && kb.fKey.wasPressedThisFrame;
+
             Vector2 aimDir = GetAimDirection();
 
             if (attackPressed && _weapons.TryAttack(aimDir))
@@ -59,6 +63,9 @@ namespace Game.Player
 
             if (skillPressed && _weapons.TryUseSkill(aimDir))
                 Flash(skillFlashColor);
+
+            if (heroSkillPressed && _heroSkill != null && _heroSkill.TryUse(aimDir))
+                Flash(new Color(1f, 0.75f, 0.1f));
 
             if (_sr != null)
                 _sr.color = Time.time < _flashUntil ? _flashColor : _baseColor;

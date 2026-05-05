@@ -13,6 +13,8 @@ namespace Game.Combat
         public float Max => _stats != null ? _stats.Get(StatType.MaxHP) : 0f;
         public float Ratio => Max > 0f ? _current / Max : 0f;
 
+        public GameObject LastDamageSource { get; private set; }
+
         public System.Action<DamageInfo> OnDamaged;
         public System.Action OnDied;
 
@@ -30,6 +32,7 @@ namespace Game.Combat
         {
             if (_current <= 0f) return;
 
+            LastDamageSource = info.Source;
             if (OnBeforeTakeDamage != null) info = OnBeforeTakeDamage(info);
 
             float defense = _stats.Get(StatType.Defense);

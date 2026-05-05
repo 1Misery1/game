@@ -21,6 +21,11 @@ namespace Game.Data
         [Header("Skills")]
         public ActiveSkillData activeSkill;
         public PassiveTalentData passiveTalent;
+        public HeroSkillType heroSkillType = HeroSkillType.None;
+        public float heroSkillCooldown = 8f;
+        public string heroSkillName;
+        public HeroPassiveType heroPassiveType = HeroPassiveType.None;
+        public string heroPassiveName;
 
         [Header("Meta Progression")]
         public bool unlockedByDefault = false;

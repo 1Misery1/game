@@ -243,10 +243,12 @@ namespace Game.Dev
         {
             switch (heroName)
             {
-                case "Warrior": return (IronSword(), IronGreatsword());
-                case "Rogue":   return (IronDagger(), WoodenBow());
-                case "Mage":    return (WoodStaff(), IronDagger());
-                default:        return (IronSword(), WoodenBow());
+                case "Warrior": return (IronSword(),    IronGreatsword());
+                case "Ranger":  return (IronDagger(),   WoodenBow());
+                case "Mage":    return (WoodStaff(),    IronDagger());
+                case "Paladin": return (IronSword(),    WoodStaff());
+                case "Hunter":  return (WoodenBow(),    IronDagger());
+                default:        return (IronSword(),    WoodenBow());
             }
         }
     }

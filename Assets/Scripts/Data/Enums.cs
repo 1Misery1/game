@@ -73,4 +73,26 @@ namespace Game.Data
         PercentAdd,
         PercentMul
     }
+
+    // 英雄主动技能类型
+    public enum HeroSkillType
+    {
+        None,
+        WarCry,         // 战吼      (战士)
+        ShadowStep,     // 影步      (游侠)
+        ArcaneSurge,    // 奥术迸发  (法师)
+        HolyLight,      // 神圣之光  (圣骑士)
+        PrecisionShot,  // 精准射击  (猎人)
+    }
+
+    // 英雄被动天赋类型
+    public enum HeroPassiveType
+    {
+        None,
+        BattlefieldWill,    // 战场意志  (战士)  HP降至30%触发爆发回血
+        ComboStrike,        // 连击      (游侠)  连续攻击叠加最多5层攻击加成
+        ManaAmplification,  // 魔力增幅  (法师)  使用武器技能后下次普攻加倍
+        SacredOath,         // 神圣誓约  (圣骑士) 击杀敌人回复5HP
+        EagleEye,           // 鹰眼      (猎人)  永久暴击率+20%、暴击伤害+30%
+    }
 }
