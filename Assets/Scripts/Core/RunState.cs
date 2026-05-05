@@ -6,9 +6,9 @@ namespace Game.Core
     public class RunState
     {
         public HeroData Hero { get; private set; }
-        public readonly List<WeaponData> Weapons = new List<WeaponData>();
-        public readonly List<TalentData> Talents = new List<TalentData>();
-        public readonly List<BuffData> Buffs = new List<BuffData>();
+        public readonly List<WeaponInstance> Weapons = new List<WeaponInstance>();
+        public readonly List<TalentData>     Talents  = new List<TalentData>();
+        public readonly List<BuffData>       Buffs    = new List<BuffData>();
 
         public int CurrentFloor = 1;
         public int Coins = 0;
@@ -35,8 +35,8 @@ namespace Game.Core
             Buffs.Clear();
         }
 
-        public void AddWeapon(WeaponData w) => Weapons.Add(w);
-        public void AddTalent(TalentData t) => Talents.Add(t);
-        public void AddBuff(BuffData b) => Buffs.Add(b);
+        public void AddWeapon(WeaponInstance w) => Weapons.Add(w);
+        public void AddTalent(TalentData t)     => Talents.Add(t);
+        public void AddBuff(BuffData b)          => Buffs.Add(b);
     }
 }

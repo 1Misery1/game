@@ -29,8 +29,18 @@ namespace Game.Data
         public string skillName;
         [TextArea] public string description;
         public Sprite icon;
+
+        public WeaponSkillType skillType = WeaponSkillType.None;
+
+        [Header("Cooldown & Damage")]
         public float cooldown = 3f;
-        public float damageMultiplier = 1.5f;
+        public float damageMultiplier = 1.5f;  // 技能伤害倍率（相对基础伤害）
+
+        [Header("Skill Parameters")]
+        public float skillRadius = 2.5f;   // AOE技能的爆炸半径
+        public float skillRange = 8f;      // 技能射程
+        public int skillHitCount = 1;      // 多段技能的段数
+
         public GameObject vfxPrefab;
     }
 }

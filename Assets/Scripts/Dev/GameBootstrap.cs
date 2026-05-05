@@ -475,7 +475,13 @@ namespace Game.Dev
                 Destroy(_player);
             };
 
+            var weaponHandler = _player.AddComponent<PlayerWeaponHandler>();
             _player.AddComponent<PlayerController>();
+
+            // 根据英雄分配起始武器
+            var (slot0, slot1) = WeaponLibrary.GetStarterWeapons(hero.heroName);
+            weaponHandler.EquipWeapon(slot0, 0);
+            weaponHandler.EquipWeapon(slot1, 1);
         }
 
         private GameObject SpawnDummyEnemy(Vector3 pos, float maxHp, float defense, float size, Color color, int coinDrop)
@@ -769,16 +775,18 @@ namespace Game.Dev
         {
             var label = new GUIStyle(GUI.skin.label) { fontSize = 16, normal = { textColor = Color.white } };
             string roomName = _currentRoomIndex < _floorRooms.Count ? _floorRooms[_currentRoomIndex] : "—";
-            GUI.Label(new Rect(10, 10, 560, 26),
+            GUI.Label(new Rect(10, 10, 600, 26),
                 $"Floor {CurrentFloor} · Room {_currentRoomIndex + 1}/{_floorRooms.Count} · {roomName}", label);
-            GUI.Label(new Rect(10, 34, 560, 26),
-                "WASD to move · Space/LMB attack · E to buy · Walk into green door", label);
+            GUI.Label(new Rect(10, 34, 700, 26),
+                "WASD移动 · Space/左键普攻 · R/右键技能 · Q切换武器 · E购买 · 走入绿门进入下一间", label);
             if (_playerHealth != null)
             {
                 GUI.Label(new Rect(10, 58, 560, 26),
-                    $"HP: {Mathf.CeilToInt(_playerHealth.Current)} / {Mathf.CeilToInt(_playerHealth.Max)}   Coins: {RunCoins}",
+                    $"HP: {Mathf.CeilToInt(_playerHealth.Current)} / {Mathf.CeilToInt(_playerHealth.Max)}   金币: {RunCoins}",
                     label);
             }
+
+            DrawWeaponHUD();
 
             if (Time.time < _bannerUntil && !string.IsNullOrEmpty(_bannerMessage))
             {
@@ -788,6 +796,79 @@ namespace Game.Dev
                     normal = { textColor = new Color(1f, 0.9f, 0.4f) }
                 };
                 GUI.Label(new Rect(0, Screen.height * 0.18f, Screen.width, 40), _bannerMessage, bannerStyle);
+            }
+        }
+
+        private void DrawWeaponHUD()
+        {
+            if (_player == null) return;
+            var handler = _player.GetComponent<Game.Player.PlayerWeaponHandler>();
+            if (handler == null) return;
+
+            float panelX = Screen.width - 340f;
+            float panelY = 10f;
+            float panelW = 330f;
+            float panelH = handler.ActiveWeapon?.Data?.HasSkill == true ? 110f : 70f;
+
+            FillRect(new Rect(panelX - 6, panelY - 4, panelW + 12, panelH + 8), new Color(0f, 0f, 0f, 0.55f));
+
+            var titleStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 13, fontStyle = FontStyle.Bold,
+                normal = { textColor = new Color(0.9f, 0.9f, 0.6f) }
+            };
+            GUI.Label(new Rect(panelX, panelY, panelW, 20), "── 武器栏 (Q切换) ──", titleStyle);
+
+            for (int i = 0; i < 2; i++)
+            {
+                var wi = handler.Slots[i];
+                bool active = handler.ActiveSlotIndex == i;
+                float y = panelY + 20f + i * 24f;
+
+                Color slotColor = wi == null ? new Color(0.5f, 0.5f, 0.5f)
+                                : WeaponData.GetRarityColor(wi.Data.rarity);
+                if (!active) slotColor *= 0.65f;
+
+                string prefix = active ? "▶" : "  ";
+                string slotText = wi == null
+                    ? $"{prefix} [{i + 1}] 空"
+                    : $"{prefix} [{i + 1}] {wi.ShortName}  {wi.CategoryLabel}  {wi.EffectiveDamage:0}伤害  {wi.Data.attackSpeed:0.0}/s";
+
+                var slotStyle = new GUIStyle(GUI.skin.label)
+                {
+                    fontSize = active ? 13 : 12,
+                    fontStyle = active ? FontStyle.Bold : FontStyle.Normal,
+                    normal = { textColor = slotColor }
+                };
+                GUI.Label(new Rect(panelX, y, panelW, 22), slotText, slotStyle);
+            }
+
+            // 技能冷却条
+            var active_wi = handler.ActiveWeapon;
+            if (active_wi?.Data?.HasSkill == true)
+            {
+                float skillY = panelY + 70f;
+                string skillName = active_wi.Data.skill.skillName;
+                float cdRem = handler.SkillCooldownRemaining;
+                bool ready = handler.SkillReady;
+
+                string skillLabel = ready
+                    ? $"技能: {skillName} [就绪!] (R/右键)"
+                    : $"技能: {skillName} CD: {cdRem:0.0}s";
+
+                Color skillColor = ready ? new Color(0.5f, 1f, 0.5f) : new Color(0.7f, 0.7f, 1f);
+                var skillStyle = new GUIStyle(GUI.skin.label)
+                {
+                    fontSize = 12, normal = { textColor = skillColor }
+                };
+                GUI.Label(new Rect(panelX, skillY, panelW, 20), skillLabel, skillStyle);
+
+                // 冷却进度条
+                float barW = panelW - 4f;
+                float barY = skillY + 20f;
+                FillRect(new Rect(panelX, barY, barW, 8), new Color(0.3f, 0.3f, 0.3f));
+                float fill = 1f - handler.SkillCooldownRatio;
+                FillRect(new Rect(panelX, barY, barW * fill, 8), ready ? new Color(0.3f, 0.9f, 0.3f) : new Color(0.3f, 0.5f, 1f));
             }
         }
 
