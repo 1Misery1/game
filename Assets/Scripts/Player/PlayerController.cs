@@ -19,6 +19,12 @@ namespace Game.Player
         private Color _baseColor;
         private Color _flashColor;
         private float _flashUntil;
+        private float _stunUntil;
+
+        public void ApplyStun(float duration)
+        {
+            _stunUntil = Mathf.Max(_stunUntil, Time.time + duration);
+        }
 
         private void Awake()
         {
@@ -36,13 +42,15 @@ namespace Game.Player
             var kb    = Keyboard.current;
             var mouse = Mouse.current;
 
-            bool attackPressed =
-                (kb    != null && kb.spaceKey.wasPressedThisFrame) ||
-                (mouse != null && mouse.leftButton.wasPressedThisFrame);
+            bool stunned = Time.time < _stunUntil;
 
-            bool skillPressed =
-                (kb    != null && kb.rKey.wasPressedThisFrame) ||
-                (mouse != null && mouse.rightButton.wasPressedThisFrame);
+            bool attackPressed = !stunned &&
+                ((kb    != null && kb.spaceKey.wasPressedThisFrame) ||
+                 (mouse != null && mouse.leftButton.wasPressedThisFrame));
+
+            bool skillPressed = !stunned &&
+                ((kb    != null && kb.rKey.wasPressedThisFrame) ||
+                 (mouse != null && mouse.rightButton.wasPressedThisFrame));
 
             Vector2 aimDir = GetAimDirection();
 
@@ -58,6 +66,11 @@ namespace Game.Player
 
         private void FixedUpdate()
         {
+            if (Time.time < _stunUntil)
+            {
+                _rb.velocity = Vector2.zero;
+                return;
+            }
             var kb   = Keyboard.current;
             var move = Vector2.zero;
             if (kb != null)

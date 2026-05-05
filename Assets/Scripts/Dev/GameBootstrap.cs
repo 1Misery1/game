@@ -29,6 +29,7 @@ namespace Game.Dev
             ("Coin",    2.0f),
             ("Shop",    1.5f),
             ("Mystery", 1.5f),
+            ("Elite",   1.2f),
         };
 
         public int RunCoins { get; private set; }
@@ -192,6 +193,7 @@ namespace Game.Dev
                 case "Coin":    BuildCoinRoom();    break;
                 case "Shop":    BuildShopRoom();    break;
                 case "Mystery": BuildMysteryRoom(); break;
+                case "Elite":   BuildEliteRoom();   break;
                 case "Boss":    BuildBossRoom();    break;
             }
         }
@@ -200,36 +202,91 @@ namespace Game.Dev
         //  Room builders
         // --------------------------------------------------------------------
 
+        // 随机生成一只普通小怪，并挂载死亡/受击回调
+        private GameObject SpawnRandomNormalEnemy(Vector3 pos, System.Action onDied)
+        {
+            if (_player == null) return null;
+            int   pick  = Random.Range(0, 6);
+            int   coins;
+            GameObject enemy;
+            var   p     = _player.transform;
+            var   root  = _currentRoomRoot.transform;
+            switch (pick)
+            {
+                case 0: enemy = EnemyFactory.SpawnSkeleton(pos, p, root);   coins = 3; break;
+                case 1: enemy = EnemyFactory.SpawnSoldier(pos, p, root);    coins = 4; break;
+                case 2: enemy = EnemyFactory.SpawnArcher(pos, p, root);     coins = 4; break;
+                case 3: enemy = EnemyFactory.SpawnBat(pos, p, root);        coins = 3; break;
+                case 4: enemy = EnemyFactory.SpawnShieldGuard(pos, p, root);coins = 6; break;
+                default:enemy = EnemyFactory.SpawnSkeleton(pos, p, root);   coins = 3; break;
+            }
+            var sr = enemy.GetComponent<SpriteRenderer>();
+            var hp = enemy.GetComponent<Health>();
+            if (sr != null) hp.OnDamaged += _ => StartCoroutine(FlashRoutine(sr, Color.white, 0.06f));
+            int c = coins;
+            hp.OnDied += () => RunCoins += c;
+            hp.OnDied += () => Destroy(enemy);
+            hp.OnDied += onDied;
+            return enemy;
+        }
+
         private void BuildMonsterRoom()
         {
             int remaining = 3;
+            float[] angles = { Mathf.PI * 0.5f, Mathf.PI * (0.5f + 2f/3f), Mathf.PI * (0.5f + 4f/3f) };
             for (int i = 0; i < 3; i++)
             {
-                float angle = i * Mathf.PI * 2f / 3f + Mathf.PI / 2f;
-                var pos = new Vector3(Mathf.Cos(angle) * 3.5f, Mathf.Sin(angle) * 2.2f, 0f);
-                var enemy = SpawnDummyEnemy(pos, 40f, 2f, 0.7f, new Color(0.9f, 0.3f, 0.3f), coinDrop: 4);
-                var hp = enemy.GetComponent<Health>();
-                hp.OnDied += () =>
-                {
-                    remaining--;
-                    if (remaining <= 0) OpenDoorToNext();
-                };
+                var pos = new Vector3(Mathf.Cos(angles[i]) * 3.5f, Mathf.Sin(angles[i]) * 2.2f, 0f);
+                SpawnRandomNormalEnemy(pos, () => { remaining--; if (remaining <= 0) OpenDoorToNext(); });
+            }
+        }
+
+        private void BuildEliteRoom()
+        {
+            ShowBanner("精英房间 — 小心精英敌人！");
+            int remaining = 3; // 1精英 + 2小怪
+
+            if (_player == null) return;
+
+            // 生成精英（士官 or 女巫，各50%概率）
+            bool isCommander = Random.value > 0.5f;
+            GameObject elite;
+            if (isCommander)
+            {
+                elite = EnemyFactory.SpawnCommander(new Vector3(0f, 2f, 0f), _player.transform, _currentRoomRoot.transform);
+            }
+            else
+            {
+                elite = EnemyFactory.SpawnWitch(new Vector3(0f, 2f, 0f), _player.transform, _currentRoomRoot.transform,
+                    spawnPos => {
+                        var bat = EnemyFactory.SpawnBat(spawnPos, _player.transform, _currentRoomRoot.transform);
+                        var bHp = bat.GetComponent<Health>();
+                        bHp.OnDamaged += _ => StartCoroutine(FlashRoutine(bat.GetComponent<SpriteRenderer>(), Color.white, 0.06f));
+                        bHp.OnDied    += () => Destroy(bat);
+                        return bat;
+                    });
+            }
+            var eliteSr = elite.GetComponent<SpriteRenderer>();
+            var eliteHp = elite.GetComponent<Health>();
+            if (eliteSr != null) eliteHp.OnDamaged += _ => StartCoroutine(FlashRoutine(eliteSr, Color.white, 0.06f));
+            eliteHp.OnDied += () => { RunCoins += 15; Destroy(elite); };
+            eliteHp.OnDied += () => { remaining--; if (remaining <= 0) OpenDoorToNext(); };
+
+            // 生成2只护卫小怪
+            Vector3[] minionPos = { new Vector3(-3f, -1.5f, 0f), new Vector3(3f, -1.5f, 0f) };
+            for (int i = 0; i < 2; i++)
+            {
+                SpawnRandomNormalEnemy(minionPos[i], () => { remaining--; if (remaining <= 0) OpenDoorToNext(); });
             }
         }
 
         private void BuildTalentRoom()
         {
             int remaining = 2;
+            Vector3[] positions = { new Vector3(-2.5f, 2f, 0f), new Vector3(2.5f, 2f, 0f) };
             for (int i = 0; i < 2; i++)
             {
-                var pos = new Vector3(-2.5f + 5f * i, 2f, 0f);
-                var enemy = SpawnDummyEnemy(pos, 30f, 1f, 0.7f, new Color(0.95f, 0.55f, 0.25f), coinDrop: 3);
-                var hp = enemy.GetComponent<Health>();
-                hp.OnDied += () =>
-                {
-                    remaining--;
-                    if (remaining <= 0) DropTalentChoices();
-                };
+                SpawnRandomNormalEnemy(positions[i], () => { remaining--; if (remaining <= 0) DropTalentChoices(); });
             }
         }
 
@@ -387,20 +444,27 @@ namespace Game.Dev
 
         private void BuildBossRoom()
         {
-            ShowBanner("BOSS — kill or be killed");
-            var boss = SpawnDummyEnemy(new Vector3(0f, 2.5f, 0f), 120f, 3f, 1.6f, new Color(0.55f, 0.08f, 0.12f), coinDrop: 0);
-            boss.name = "Boss";
-            var stats = boss.GetComponent<CharacterStats>();
-            stats.SetBase(StatType.MoveSpeed, 2.2f);
+            ShowBanner("BOSS — 地狱巨人降临！");
+            if (_player == null) return;
 
-            var ai = boss.AddComponent<ChaseAI>();
-            ai.target = _player != null ? _player.transform : null;
-            ai.stoppingDistance = 0.95f;
-            ai.attackInterval = 1.0f;
-            ai.contactDamage = 12f;
+            // 先生成Boss（callback先传null，下方再设置，避免闭包中boss未赋值的问题）
+            var boss   = EnemyFactory.SpawnHellGiant(new Vector3(0f, 2.5f, 0f),
+                             _player.transform, _currentRoomRoot.transform, null);
+            var bossAI = boss.GetComponent<Game.AI.HellGiantAI>();
+            var roomTr = _currentRoomRoot.transform;
+            bossAI.SpawnLavaCallback = (pos, dps, lt, r) =>
+                EnemyFactory.SpawnLavaPool(pos, dps, lt, r, roomTr, boss);
 
-            var hp = boss.GetComponent<Health>();
-            hp.OnDied += () => { _currentRoomIndex = _floorRooms.Count; TriggerVictory(); };
+            var bossSr = boss.GetComponent<SpriteRenderer>();
+            var bossHp = boss.GetComponent<Health>();
+            if (bossSr != null)
+                bossHp.OnDamaged += _ => StartCoroutine(FlashRoutine(bossSr, Color.white, 0.08f));
+            bossHp.OnDied += () =>
+            {
+                _currentRoomIndex = _floorRooms.Count;
+                Destroy(boss);
+                TriggerVictory();
+            };
         }
 
         private void ApplyTalentToPlayer(TalentData talent)

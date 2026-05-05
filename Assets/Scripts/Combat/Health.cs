@@ -16,6 +16,9 @@ namespace Game.Combat
         public System.Action<DamageInfo> OnDamaged;
         public System.Action OnDied;
 
+        // 可选拦截器：在计算防御前修改伤害（用于盾牌减伤等机制）
+        public System.Func<DamageInfo, DamageInfo> OnBeforeTakeDamage;
+
         private void Awake()
         {
             _stats = GetComponent<CharacterStats>();
@@ -26,6 +29,8 @@ namespace Game.Combat
         public void TakeDamage(DamageInfo info)
         {
             if (_current <= 0f) return;
+
+            if (OnBeforeTakeDamage != null) info = OnBeforeTakeDamage(info);
 
             float defense = _stats.Get(StatType.Defense);
             float dmg = info.Type == DamageType.True

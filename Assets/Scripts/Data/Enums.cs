@@ -49,6 +49,7 @@ namespace Game.Data
         Coin,
         Shop,
         Mystery,
+        Elite,   // 精英房间：1精英 + 2小怪
         Boss
     }
 
