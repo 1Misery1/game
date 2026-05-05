@@ -10,16 +10,17 @@ using UnityEngine;
 
 namespace Game.Dev
 {
-    /// Single-scene state machine: Menu -> Playing -> Victory/Death -> Menu.
-    /// Drives random dungeon generation across all 6 GDD room types.
+    /// Single-scene state machine: Menu -> Playing -> FloorComplete -> Playing... -> Victory/Death -> Menu.
+    /// Supports multi-floor runs with enemy scaling and weapon drops.
     public class GameBootstrap : MonoBehaviour
     {
-        [SerializeField] private float arenaHalfWidth = 8f;
+        [SerializeField] private float arenaHalfWidth  = 8f;
         [SerializeField] private float arenaHalfHeight = 4.5f;
-        [SerializeField] private int clearReward = 50;
-        [SerializeField] private int nonBossRoomCount = 4;
+        [SerializeField] private int   clearReward     = 50;
+        [SerializeField] private int   nonBossRoomCount = 4;
+        [SerializeField] private int   maxFloor        = 3;
 
-        private enum State { Menu, Playing, Victory, Death }
+        private enum State { Menu, Playing, FloorComplete, Victory, Death }
 
         // Room pool weights (Boss handled separately, always last)
         private static readonly (string type, float weight)[] RoomPool =
@@ -30,10 +31,14 @@ namespace Game.Dev
             ("Shop",    1.5f),
             ("Mystery", 1.5f),
             ("Elite",   1.2f),
+            ("Weapon",  1.5f),
         };
 
-        public int RunCoins { get; private set; }
-        public int CurrentFloor { get; private set; } = 1;
+        public int RunCoins      { get; private set; }
+        public int CurrentFloor  { get; private set; } = 1;
+
+        // Enemy stats multiply by this each floor
+        private float FloorScale => 1f + (CurrentFloor - 1) * 0.3f;
 
         private State _state = State.Menu;
         private PersistentState _persistent;
@@ -42,13 +47,14 @@ namespace Game.Dev
 
         private GameObject _arenaRoot;
         private GameObject _player;
-        private Health _playerHealth;
+        private Health     _playerHealth;
         private GameObject _currentRoomRoot;
         private List<string> _floorRooms = new List<string>();
         private int _currentRoomIndex;
 
+        private DamageNumbers _damageNumbers;
         private string _bannerMessage;
-        private float _bannerUntil;
+        private float  _bannerUntil;
 
         // --------------------------------------------------------------------
         //  Startup
@@ -56,10 +62,11 @@ namespace Game.Dev
 
         private void Start()
         {
-            _persistent = PersistentState.Load();
+            _persistent    = PersistentState.Load();
             BuildHeroPool();
             EnsureStarterUnlocked();
             EnsureCamera();
+            _damageNumbers = gameObject.AddComponent<DamageNumbers>();
             EnterMenu();
         }
 
@@ -76,15 +83,15 @@ namespace Game.Dev
         private HeroData MakeHero(string name, string desc, float hp, float atk, float def, float ms, float asp, int cost, Color tint)
         {
             var h = ScriptableObject.CreateInstance<HeroData>();
-            h.heroName = name;
-            h.description = desc;
-            h.baseMaxHP = hp;
-            h.baseAttack = atk;
-            h.baseDefense = def;
-            h.baseMoveSpeed = ms;
-            h.baseAttackSpeed = asp;
-            h.unlockCost = cost;
-            h.tintColor = tint;
+            h.heroName          = name;
+            h.description       = desc;
+            h.baseMaxHP         = hp;
+            h.baseAttack        = atk;
+            h.baseDefense       = def;
+            h.baseMoveSpeed     = ms;
+            h.baseAttackSpeed   = asp;
+            h.unlockCost        = cost;
+            h.tintColor         = tint;
             h.unlockedByDefault = cost == 0;
             return h;
         }
@@ -117,10 +124,10 @@ namespace Game.Dev
             if (!_persistent.IsHeroUnlocked(hero.heroName)) return;
 
             CleanupRun();
-            _state = State.Playing;
-            RunCoins = 0;
+            _state       = State.Playing;
+            RunCoins     = 0;
             CurrentFloor = 1;
-            _floorRooms = GenerateFloor();
+            _floorRooms  = GenerateFloor();
             BuildArena();
             SpawnPlayer(hero);
             LoadRoom(0);
@@ -130,6 +137,25 @@ namespace Game.Dev
         {
             _state = State.Victory;
             _persistent.AddCurrency(clearReward);
+            _persistent.Save();
+        }
+
+        private void TriggerFloorComplete()
+        {
+            _state = State.FloorComplete;
+            _persistent.AddCurrency(clearReward);
+            _persistent.Save();
+        }
+
+        private void AdvanceFloor()
+        {
+            CurrentFloor++;
+            _floorRooms = GenerateFloor();
+            if (_currentRoomRoot != null) { Destroy(_currentRoomRoot); _currentRoomRoot = null; }
+            if (_player != null) _player.transform.position = Vector3.zero;
+            LoadRoom(0);
+            _state = State.Playing;
+            ShowBanner($"第 {CurrentFloor} 层 — 难度 ×{FloorScale:0.0}");
         }
 
         private void TriggerDeath()
@@ -140,12 +166,12 @@ namespace Game.Dev
         private void CleanupRun()
         {
             if (_currentRoomRoot != null) Destroy(_currentRoomRoot);
-            if (_arenaRoot != null) Destroy(_arenaRoot);
-            if (_player != null) Destroy(_player);
-            _playerHealth = null;
+            if (_arenaRoot != null)       Destroy(_arenaRoot);
+            if (_player != null)          Destroy(_player);
+            _playerHealth   = null;
             _currentRoomIndex = 0;
-            _bannerMessage = null;
-            _bannerUntil = 0f;
+            _bannerMessage  = null;
+            _bannerUntil    = 0f;
         }
 
         // --------------------------------------------------------------------
@@ -161,7 +187,7 @@ namespace Game.Dev
             for (int i = 0; i < nonBossRoomCount; i++)
             {
                 float roll = Random.value * total;
-                float acc = 0f;
+                float acc  = 0f;
                 foreach (var e in RoomPool)
                 {
                     acc += e.weight;
@@ -194,6 +220,7 @@ namespace Game.Dev
                 case "Shop":    BuildShopRoom();    break;
                 case "Mystery": BuildMysteryRoom(); break;
                 case "Elite":   BuildEliteRoom();   break;
+                case "Weapon":  BuildWeaponRoom();  break;
                 case "Boss":    BuildBossRoom();    break;
             }
         }
@@ -202,28 +229,35 @@ namespace Game.Dev
         //  Room builders
         // --------------------------------------------------------------------
 
-        // 随机生成一只普通小怪，并挂载死亡/受击回调
         private GameObject SpawnRandomNormalEnemy(Vector3 pos, System.Action onDied)
         {
             if (_player == null) return null;
-            int   pick  = Random.Range(0, 6);
-            int   coins;
+            int pick = Random.Range(0, 6);
+            int coins;
             GameObject enemy;
-            var   p     = _player.transform;
-            var   root  = _currentRoomRoot.transform;
+            var p    = _player.transform;
+            var root = _currentRoomRoot.transform;
             switch (pick)
             {
-                case 0: enemy = EnemyFactory.SpawnSkeleton(pos, p, root);   coins = 3; break;
-                case 1: enemy = EnemyFactory.SpawnSoldier(pos, p, root);    coins = 4; break;
-                case 2: enemy = EnemyFactory.SpawnArcher(pos, p, root);     coins = 4; break;
-                case 3: enemy = EnemyFactory.SpawnBat(pos, p, root);        coins = 3; break;
-                case 4: enemy = EnemyFactory.SpawnShieldGuard(pos, p, root);coins = 6; break;
-                default:enemy = EnemyFactory.SpawnSkeleton(pos, p, root);   coins = 3; break;
+                case 0: enemy = EnemyFactory.SpawnSkeleton(pos, p, root);    coins = 3; break;
+                case 1: enemy = EnemyFactory.SpawnSoldier(pos, p, root);     coins = 4; break;
+                case 2: enemy = EnemyFactory.SpawnArcher(pos, p, root);      coins = 4; break;
+                case 3: enemy = EnemyFactory.SpawnBat(pos, p, root);         coins = 3; break;
+                case 4: enemy = EnemyFactory.SpawnShieldGuard(pos, p, root); coins = 6; break;
+                default:enemy = EnemyFactory.SpawnSkeleton(pos, p, root);    coins = 3; break;
             }
+            ScaleEnemyStats(enemy, FloorScale);
+
             var sr = enemy.GetComponent<SpriteRenderer>();
             var hp = enemy.GetComponent<Health>();
-            if (sr != null) hp.OnDamaged += _ => StartCoroutine(FlashRoutine(sr, Color.white, 0.06f));
-            int c = coins;
+            var tr = enemy.transform;
+            if (sr != null)
+                hp.OnDamaged += dmg =>
+                {
+                    StartCoroutine(FlashRoutine(sr, Color.white, 0.06f));
+                    if (tr != null) DamageNumbers.Instance?.Show(tr.position, dmg.Amount, dmg.IsCrit);
+                };
+            int c = Mathf.RoundToInt(coins * FloorScale);
             hp.OnDied += () => RunCoins += c;
             hp.OnDied += () => Destroy(enemy);
             hp.OnDied += onDied;
@@ -233,7 +267,7 @@ namespace Game.Dev
         private void BuildMonsterRoom()
         {
             int remaining = 3;
-            float[] angles = { Mathf.PI * 0.5f, Mathf.PI * (0.5f + 2f/3f), Mathf.PI * (0.5f + 4f/3f) };
+            float[] angles = { Mathf.PI * 0.5f, Mathf.PI * (0.5f + 2f / 3f), Mathf.PI * (0.5f + 4f / 3f) };
             for (int i = 0; i < 3; i++)
             {
                 var pos = new Vector3(Mathf.Cos(angles[i]) * 3.5f, Mathf.Sin(angles[i]) * 2.2f, 0f);
@@ -244,11 +278,10 @@ namespace Game.Dev
         private void BuildEliteRoom()
         {
             ShowBanner("精英房间 — 小心精英敌人！");
-            int remaining = 3; // 1精英 + 2小怪
+            int remaining = 3;
 
             if (_player == null) return;
 
-            // 生成精英（士官 or 女巫，各50%概率）
             bool isCommander = Random.value > 0.5f;
             GameObject elite;
             if (isCommander)
@@ -258,26 +291,41 @@ namespace Game.Dev
             else
             {
                 elite = EnemyFactory.SpawnWitch(new Vector3(0f, 2f, 0f), _player.transform, _currentRoomRoot.transform,
-                    spawnPos => {
-                        var bat = EnemyFactory.SpawnBat(spawnPos, _player.transform, _currentRoomRoot.transform);
+                    spawnPos =>
+                    {
+                        var bat  = EnemyFactory.SpawnBat(spawnPos, _player.transform, _currentRoomRoot.transform);
+                        ScaleEnemyStats(bat, FloorScale);
                         var bHp = bat.GetComponent<Health>();
-                        bHp.OnDamaged += _ => StartCoroutine(FlashRoutine(bat.GetComponent<SpriteRenderer>(), Color.white, 0.06f));
-                        bHp.OnDied    += () => Destroy(bat);
+                        var bSr = bat.GetComponent<SpriteRenderer>();
+                        var bTr = bat.transform;
+                        if (bSr != null)
+                            bHp.OnDamaged += dmg =>
+                            {
+                                StartCoroutine(FlashRoutine(bSr, Color.white, 0.06f));
+                                if (bTr != null) DamageNumbers.Instance?.Show(bTr.position, dmg.Amount, dmg.IsCrit);
+                            };
+                        bHp.OnDied += () => Destroy(bat);
                         return bat;
                     });
             }
+
+            ScaleEnemyStats(elite, FloorScale);
             var eliteSr = elite.GetComponent<SpriteRenderer>();
             var eliteHp = elite.GetComponent<Health>();
-            if (eliteSr != null) eliteHp.OnDamaged += _ => StartCoroutine(FlashRoutine(eliteSr, Color.white, 0.06f));
-            eliteHp.OnDied += () => { RunCoins += 15; Destroy(elite); };
+            var eliteTr = elite.transform;
+            if (eliteSr != null)
+                eliteHp.OnDamaged += dmg =>
+                {
+                    StartCoroutine(FlashRoutine(eliteSr, Color.white, 0.06f));
+                    if (eliteTr != null) DamageNumbers.Instance?.Show(eliteTr.position, dmg.Amount, dmg.IsCrit);
+                };
+            int eliteCoins = Mathf.RoundToInt(15 * FloorScale);
+            eliteHp.OnDied += () => { RunCoins += eliteCoins; Destroy(elite); };
             eliteHp.OnDied += () => { remaining--; if (remaining <= 0) OpenDoorToNext(); };
 
-            // 生成2只护卫小怪
             Vector3[] minionPos = { new Vector3(-3f, -1.5f, 0f), new Vector3(3f, -1.5f, 0f) };
             for (int i = 0; i < 2; i++)
-            {
                 SpawnRandomNormalEnemy(minionPos[i], () => { remaining--; if (remaining <= 0) OpenDoorToNext(); });
-            }
         }
 
         private void BuildTalentRoom()
@@ -285,9 +333,7 @@ namespace Game.Dev
             int remaining = 2;
             Vector3[] positions = { new Vector3(-2.5f, 2f, 0f), new Vector3(2.5f, 2f, 0f) };
             for (int i = 0; i < 2; i++)
-            {
                 SpawnRandomNormalEnemy(positions[i], () => { remaining--; if (remaining <= 0) DropTalentChoices(); });
-            }
         }
 
         private void DropTalentChoices()
@@ -309,9 +355,7 @@ namespace Game.Dev
                 pickups.Add(SpawnTalentOrb(talent, def.color));
             }
             for (int i = 0; i < pickups.Count; i++)
-            {
                 pickups[i].transform.position = new Vector3(-3.5f + 3.5f * i, -2.2f, 0f);
-            }
 
             var snapshot = new List<TalentPickup>(pickups);
             foreach (var p in snapshot)
@@ -333,11 +377,9 @@ namespace Game.Dev
             ShowBanner("COIN ROOM — collect all to proceed");
             for (int i = 0; i < 5; i++)
             {
-                var pos = new Vector3(
-                    Random.Range(-5f, 5f),
-                    Random.Range(-3f, 3f), 0f);
+                var pos  = new Vector3(Random.Range(-5f, 5f), Random.Range(-3f, 3f), 0f);
                 var coin = SpawnCoinPickup(pos, amount: 6);
-                coin.OnPicked += (amt) =>
+                coin.OnPicked += amt =>
                 {
                     RunCoins += amt;
                     remaining--;
@@ -367,7 +409,7 @@ namespace Game.Dev
                 SpawnShopPedestal(pos, talent, d.color, d.price);
             }
 
-            OpenDoorToNext(); // shopping is optional; leave whenever
+            OpenDoorToNext(); // shopping is optional
         }
 
         private void BuildMysteryRoom()
@@ -376,16 +418,16 @@ namespace Game.Dev
 
             var go = new GameObject("MysteryPedestal");
             go.transform.SetParent(_currentRoomRoot.transform, true);
-            go.transform.position = Vector3.zero;
+            go.transform.position   = Vector3.zero;
             go.transform.localScale = new Vector3(0.8f, 0.8f, 1f);
 
             var sr = go.AddComponent<SpriteRenderer>();
-            sr.sprite = MakeUnitSquareSprite();
-            sr.color = new Color(0.75f, 0.3f, 0.95f);
+            sr.sprite       = MakeUnitSquareSprite();
+            sr.color        = new Color(0.75f, 0.3f, 0.95f);
             sr.sortingOrder = 7;
 
             var col = go.AddComponent<CircleCollider2D>();
-            col.radius = 0.7f;
+            col.radius    = 0.7f;
             col.isTrigger = true;
 
             var mystery = go.AddComponent<MysteryPedestal>();
@@ -422,8 +464,7 @@ namespace Game.Dev
             if (_player == null) return;
             var stats = _player.GetComponent<CharacterStats>();
             if (stats == null) return;
-            var curse = new StatModifier(StatType.MaxHP, ModifierOp.PercentMul, -0.15f, "Mystery_Curse");
-            stats.AddModifier(curse);
+            stats.AddModifier(new StatModifier(StatType.MaxHP, ModifierOp.PercentMul, -0.15f, "Mystery_Curse"));
         }
 
         private TalentData GenerateRandomTalent()
@@ -442,28 +483,43 @@ namespace Game.Dev
             return t;
         }
 
+        private void BuildWeaponRoom()
+        {
+            ShowBanner("武器房 — 走近后按 E 装备到当前槽（Q切换槽位）");
+            var offers = GetRandomWeaponOffers(3);
+            for (int i = 0; i < offers.Length; i++)
+                SpawnWeaponPedestal(new Vector3(-3.5f + 3.5f * i, 0.5f, 0f), offers[i]);
+            OpenDoorToNext(); // weapon room is optional
+        }
+
         private void BuildBossRoom()
         {
             ShowBanner("BOSS — 地狱巨人降临！");
             if (_player == null) return;
 
-            // 先生成Boss（callback先传null，下方再设置，避免闭包中boss未赋值的问题）
             var boss   = EnemyFactory.SpawnHellGiant(new Vector3(0f, 2.5f, 0f),
                              _player.transform, _currentRoomRoot.transform, null);
-            var bossAI = boss.GetComponent<Game.AI.HellGiantAI>();
+            var bossAI = boss.GetComponent<HellGiantAI>();
             var roomTr = _currentRoomRoot.transform;
             bossAI.SpawnLavaCallback = (pos, dps, lt, r) =>
                 EnemyFactory.SpawnLavaPool(pos, dps, lt, r, roomTr, boss);
 
+            ScaleEnemyStats(boss, FloorScale);
+
             var bossSr = boss.GetComponent<SpriteRenderer>();
             var bossHp = boss.GetComponent<Health>();
+            var bossTr = boss.transform;
             if (bossSr != null)
-                bossHp.OnDamaged += _ => StartCoroutine(FlashRoutine(bossSr, Color.white, 0.08f));
+                bossHp.OnDamaged += dmg =>
+                {
+                    StartCoroutine(FlashRoutine(bossSr, Color.white, 0.08f));
+                    if (bossTr != null) DamageNumbers.Instance?.Show(bossTr.position, dmg.Amount, dmg.IsCrit);
+                };
             bossHp.OnDied += () =>
             {
-                _currentRoomIndex = _floorRooms.Count;
                 Destroy(boss);
-                TriggerVictory();
+                if (CurrentFloor >= maxFloor) TriggerVictory();
+                else                          TriggerFloorComplete();
             };
         }
 
@@ -480,23 +536,22 @@ namespace Game.Dev
         private void OpenDoorToNext()
         {
             if (_currentRoomRoot == null) return;
-            // Don't open a second door
             if (_currentRoomRoot.transform.Find("Door") != null) return;
 
             var doorGO = new GameObject("Door");
             doorGO.transform.SetParent(_currentRoomRoot.transform, true);
-            doorGO.transform.position = new Vector3(0f, -arenaHalfHeight + 0.4f, 0f);
+            doorGO.transform.position   = new Vector3(0f, -arenaHalfHeight + 0.4f, 0f);
             doorGO.transform.localScale = new Vector3(1.6f, 0.35f, 1f);
 
             var sr = doorGO.AddComponent<SpriteRenderer>();
-            sr.sprite = MakeUnitSquareSprite();
-            sr.color = new Color(0.25f, 0.95f, 0.35f);
+            sr.sprite       = MakeUnitSquareSprite();
+            sr.color        = new Color(0.25f, 0.95f, 0.35f);
             sr.sortingOrder = 8;
 
             var col = doorGO.AddComponent<BoxCollider2D>();
             col.isTrigger = true;
 
-            var door = doorGO.AddComponent<DoorTrigger>();
+            var door     = doorGO.AddComponent<DoorTrigger>();
             int nextIndex = _currentRoomIndex + 1;
             door.OnPlayerEntered += () => LoadRoom(nextIndex);
         }
@@ -508,17 +563,17 @@ namespace Game.Dev
         private void SpawnPlayer(HeroData hero)
         {
             _player = new GameObject("Player_" + hero.heroName);
-            _player.transform.position = Vector3.zero;
+            _player.transform.position   = Vector3.zero;
             _player.transform.localScale = new Vector3(0.8f, 0.8f, 1f);
 
             var sr = _player.AddComponent<SpriteRenderer>();
-            sr.sprite = MakeUnitSquareSprite();
-            sr.color = hero.tintColor;
+            sr.sprite       = MakeUnitSquareSprite();
+            sr.color        = hero.tintColor;
             sr.sortingOrder = 10;
 
             var rb = _player.AddComponent<Rigidbody2D>();
-            rb.gravityScale = 0f;
-            rb.freezeRotation = true;
+            rb.gravityScale           = 0f;
+            rb.freezeRotation         = true;
             rb.collisionDetectionMode = CollisionDetectionMode2D.Continuous;
 
             var col = _player.AddComponent<CircleCollider2D>();
@@ -532,7 +587,12 @@ namespace Game.Dev
             stats.SetBase(StatType.AttackSpeed, hero.baseAttackSpeed);
 
             _playerHealth = _player.AddComponent<Health>();
-            _playerHealth.OnDamaged += _ => StartCoroutine(FlashRoutine(sr, Color.white, 0.06f));
+            var playerTr = _player.transform;
+            _playerHealth.OnDamaged += dmg =>
+            {
+                StartCoroutine(FlashRoutine(sr, Color.white, 0.06f));
+                if (playerTr != null) DamageNumbers.Instance?.Show(playerTr.position + Vector3.up * 0.5f, dmg.Amount, dmg.IsCrit);
+            };
             _playerHealth.OnDied += () =>
             {
                 TriggerDeath();
@@ -542,44 +602,74 @@ namespace Game.Dev
             var weaponHandler = _player.AddComponent<PlayerWeaponHandler>();
             _player.AddComponent<PlayerController>();
 
-            // 根据英雄分配起始武器
             var (slot0, slot1) = WeaponLibrary.GetStarterWeapons(hero.heroName);
             weaponHandler.EquipWeapon(slot0, 0);
             weaponHandler.EquipWeapon(slot1, 1);
         }
 
-        private GameObject SpawnDummyEnemy(Vector3 pos, float maxHp, float defense, float size, Color color, int coinDrop)
+        private void SpawnWeaponPedestal(Vector3 pos, WeaponInstance weapon)
         {
-            var go = new GameObject("Enemy");
+            var go = new GameObject("WeaponPedestal_" + weapon.Data.weaponName);
             go.transform.SetParent(_currentRoomRoot.transform, true);
-            go.transform.position = pos;
-            go.transform.localScale = new Vector3(size, size, 1f);
+            go.transform.position   = pos;
+            go.transform.localScale = new Vector3(0.65f, 0.65f, 1f);
 
             var sr = go.AddComponent<SpriteRenderer>();
-            sr.sprite = MakeUnitSquareSprite();
-            sr.color = color;
-            sr.sortingOrder = 5;
-
-            var rb = go.AddComponent<Rigidbody2D>();
-            rb.bodyType = RigidbodyType2D.Kinematic;
-            rb.freezeRotation = true;
+            sr.sprite       = MakeUnitSquareSprite();
+            sr.color        = WeaponData.GetRarityColor(weapon.Data.rarity);
+            sr.sortingOrder = 7;
 
             var col = go.AddComponent<CircleCollider2D>();
-            col.radius = 0.5f;
+            col.radius    = 0.9f;
+            col.isTrigger = true;
 
-            var stats = go.AddComponent<CharacterStats>();
-            stats.SetBase(StatType.MaxHP, maxHp);
-            stats.SetBase(StatType.Defense, defense);
-            stats.SetBase(StatType.MoveSpeed, 0f);
-
-            var health = go.AddComponent<Health>();
-            health.OnDamaged += _ => StartCoroutine(FlashRoutine(sr, Color.white, 0.08f));
-            health.OnDied += () =>
+            var pedestal       = go.AddComponent<WeaponPedestal>();
+            pedestal.Weapon    = weapon;
+            pedestal.OnEquipped = w =>
             {
-                if (coinDrop > 0) RunCoins += coinDrop;
-                Destroy(go);
+                if (_player == null) return;
+                var handler = _player.GetComponent<PlayerWeaponHandler>();
+                if (handler != null) handler.EquipWeapon(w, handler.ActiveSlotIndex);
+                ShowBanner($"已装备: {w.Data.weaponName}");
             };
-            return go;
+        }
+
+        private WeaponInstance[] GetRandomWeaponOffers(int count)
+        {
+            var all = new System.Func<WeaponInstance>[]
+            {
+                WeaponLibrary.IronDagger,     WeaponLibrary.SteelDagger,
+                WeaponLibrary.VenomFang,      WeaponLibrary.PhantomBlade,
+                WeaponLibrary.IronSword,      WeaponLibrary.KnightSword,
+                WeaponLibrary.HolyBlade,      WeaponLibrary.DragonAbyssSword,
+                WeaponLibrary.IronGreatsword, WeaponLibrary.WarriorGreatsword,
+                WeaponLibrary.ArmorBreaker,   WeaponLibrary.DoomBlade,
+                WeaponLibrary.WoodenBow,      WeaponLibrary.HunterBow,
+                WeaponLibrary.CloudPiercer,   WeaponLibrary.CelestialBow,
+                WeaponLibrary.WoodStaff,      WeaponLibrary.MagicStaff,
+                WeaponLibrary.FrostStaff,     WeaponLibrary.ChaosWand,
+            };
+            var avail  = new List<int>();
+            for (int i = 0; i < all.Length; i++) avail.Add(i);
+
+            var result = new WeaponInstance[Mathf.Min(count, avail.Count)];
+            for (int i = 0; i < result.Length; i++)
+            {
+                int ri = Random.Range(0, avail.Count);
+                result[i] = all[avail[ri]]();
+                avail.RemoveAt(ri);
+            }
+            return result;
+        }
+
+        private void ScaleEnemyStats(GameObject enemy, float scale)
+        {
+            if (scale <= 1.001f || enemy == null) return;
+            var stats = enemy.GetComponent<CharacterStats>();
+            if (stats == null) return;
+            stats.SetBase(StatType.MaxHP,  stats.Get(StatType.MaxHP)  * scale);
+            stats.SetBase(StatType.Attack, stats.Get(StatType.Attack) * scale);
+            enemy.GetComponent<Health>()?.Heal(99999f);
         }
 
         private TalentPickup SpawnTalentOrb(TalentData data, Color color)
@@ -589,12 +679,12 @@ namespace Game.Dev
             go.transform.localScale = new Vector3(0.55f, 0.55f, 1f);
 
             var sr = go.AddComponent<SpriteRenderer>();
-            sr.sprite = MakeUnitSquareSprite();
-            sr.color = color;
+            sr.sprite       = MakeUnitSquareSprite();
+            sr.color        = color;
             sr.sortingOrder = 7;
 
             var col = go.AddComponent<CircleCollider2D>();
-            col.radius = 0.5f;
+            col.radius    = 0.5f;
             col.isTrigger = true;
 
             var pickup = go.AddComponent<TalentPickup>();
@@ -606,16 +696,16 @@ namespace Game.Dev
         {
             var go = new GameObject("Coin");
             go.transform.SetParent(_currentRoomRoot.transform, true);
-            go.transform.position = pos;
+            go.transform.position   = pos;
             go.transform.localScale = new Vector3(0.3f, 0.3f, 1f);
 
             var sr = go.AddComponent<SpriteRenderer>();
-            sr.sprite = MakeUnitSquareSprite();
-            sr.color = new Color(1f, 0.85f, 0.25f);
+            sr.sprite       = MakeUnitSquareSprite();
+            sr.color        = new Color(1f, 0.85f, 0.25f);
             sr.sortingOrder = 7;
 
             var col = go.AddComponent<CircleCollider2D>();
-            col.radius = 0.6f;
+            col.radius    = 0.6f;
             col.isTrigger = true;
 
             var coin = go.AddComponent<CoinPickup>();
@@ -627,22 +717,22 @@ namespace Game.Dev
         {
             var go = new GameObject("Shop_" + talent.talentName);
             go.transform.SetParent(_currentRoomRoot.transform, true);
-            go.transform.position = pos;
+            go.transform.position   = pos;
             go.transform.localScale = new Vector3(0.7f, 0.7f, 1f);
 
             var sr = go.AddComponent<SpriteRenderer>();
-            sr.sprite = MakeUnitSquareSprite();
-            sr.color = color;
+            sr.sprite       = MakeUnitSquareSprite();
+            sr.color        = color;
             sr.sortingOrder = 7;
 
             var col = go.AddComponent<CircleCollider2D>();
-            col.radius = 0.9f;
+            col.radius    = 0.9f;
             col.isTrigger = true;
 
             var shop = go.AddComponent<ShopPedestal>();
-            shop.talent = talent;
-            shop.price = price;
-            shop.GetCoins = () => RunCoins;
+            shop.talent     = talent;
+            shop.price      = price;
+            shop.GetCoins   = () => RunCoins;
             shop.SpendCoins = amount => RunCoins -= amount;
             shop.OnPurchased = t => ApplyTalentToPlayer(t);
             return shop;
@@ -658,7 +748,7 @@ namespace Game.Dev
             var camGO = new GameObject("Main Camera");
             camGO.tag = "MainCamera";
             var cam = camGO.AddComponent<Camera>();
-            cam.orthographic = true;
+            cam.orthographic    = true;
             cam.orthographicSize = 5.5f;
             cam.backgroundColor = new Color(0.12f, 0.12f, 0.18f);
             cam.transform.position = new Vector3(0f, 0f, -10f);
@@ -671,19 +761,19 @@ namespace Game.Dev
             var wallColor = new Color(0.3f, 0.3f, 0.35f);
             MakeWall(new Vector2(0f,  arenaHalfHeight + 0.25f), new Vector2(arenaHalfWidth * 2f + 0.5f, 0.5f), wallColor);
             MakeWall(new Vector2(0f, -arenaHalfHeight - 0.25f), new Vector2(arenaHalfWidth * 2f + 0.5f, 0.5f), wallColor);
-            MakeWall(new Vector2( arenaHalfWidth + 0.25f, 0f), new Vector2(0.5f, arenaHalfHeight * 2f + 0.5f), wallColor);
-            MakeWall(new Vector2(-arenaHalfWidth - 0.25f, 0f), new Vector2(0.5f, arenaHalfHeight * 2f + 0.5f), wallColor);
+            MakeWall(new Vector2( arenaHalfWidth + 0.25f, 0f),  new Vector2(0.5f, arenaHalfHeight * 2f + 0.5f), wallColor);
+            MakeWall(new Vector2(-arenaHalfWidth - 0.25f, 0f),  new Vector2(0.5f, arenaHalfHeight * 2f + 0.5f), wallColor);
         }
 
         private void MakeWall(Vector2 pos, Vector2 size, Color color)
         {
             var go = new GameObject("Wall");
             go.transform.SetParent(_arenaRoot.transform, true);
-            go.transform.position = pos;
+            go.transform.position   = pos;
             go.transform.localScale = new Vector3(size.x, size.y, 1f);
             var sr = go.AddComponent<SpriteRenderer>();
-            sr.sprite = MakeUnitSquareSprite();
-            sr.color = color;
+            sr.sprite       = MakeUnitSquareSprite();
+            sr.color        = color;
             sr.sortingOrder = 0;
             go.AddComponent<BoxCollider2D>();
         }
@@ -704,7 +794,7 @@ namespace Game.Dev
         private void ShowBanner(string message)
         {
             _bannerMessage = message;
-            _bannerUntil = Time.time + 3f;
+            _bannerUntil   = Time.time + 3f;
         }
 
         private static Sprite _cachedSquare;
@@ -712,7 +802,7 @@ namespace Game.Dev
         {
             if (_cachedSquare != null) return _cachedSquare;
             const int size = 32;
-            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+            var tex    = new Texture2D(size, size, TextureFormat.RGBA32, false);
             tex.filterMode = FilterMode.Point;
             var pixels = new Color[size * size];
             for (int i = 0; i < pixels.Length; i++) pixels[i] = Color.white;
@@ -754,10 +844,11 @@ namespace Game.Dev
         {
             switch (_state)
             {
-                case State.Menu:    DrawMenu(); break;
-                case State.Playing: DrawHUD();  break;
-                case State.Victory: DrawEndScreen("VICTORY!",  new Color(1f, 0.9f, 0.2f), true); break;
-                case State.Death:   DrawEndScreen("YOU DIED",  new Color(1f, 0.3f, 0.3f), false); break;
+                case State.Menu:          DrawMenu();                                                break;
+                case State.Playing:       DrawHUD();                                                break;
+                case State.FloorComplete: DrawFloorComplete();                                      break;
+                case State.Victory:       DrawEndScreen("VICTORY!",  new Color(1f, 0.9f, 0.2f), true);  break;
+                case State.Death:         DrawEndScreen("YOU DIED",  new Color(1f, 0.3f, 0.3f), false); break;
             }
         }
 
@@ -768,25 +859,25 @@ namespace Game.Dev
             var title = new GUIStyle(GUI.skin.label)
             {
                 fontSize = 44, alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold,
-                normal = { textColor = new Color(0.95f, 0.95f, 0.4f) }
+                normal   = { textColor = new Color(0.95f, 0.95f, 0.4f) }
             };
             GUI.Label(new Rect(0, 30, Screen.width, 60), "2D ROGUELIKE", title);
 
             var info = new GUIStyle(GUI.skin.label)
             {
                 fontSize = 18, alignment = TextAnchor.MiddleCenter,
-                normal = { textColor = Color.white }
+                normal   = { textColor = Color.white }
             };
             GUI.Label(new Rect(0, 90, Screen.width, 28), $"Unlock Currency: {_persistent.UnlockCurrency}", info);
 
             float cardW = 260f, cardH = 180f, gap = 16f;
             float totalW = _heroes.Length * cardW + (_heroes.Length - 1) * gap;
             float startX = (Screen.width - totalW) * 0.5f;
-            float y = 150f;
+            float y      = 150f;
 
             for (int i = 0; i < _heroes.Length; i++)
             {
-                var h = _heroes[i];
+                var h        = _heroes[i];
                 bool unlocked = _persistent.IsHeroUnlocked(h.heroName);
                 bool selected = i == _selectedHeroIndex;
 
@@ -839,10 +930,10 @@ namespace Game.Dev
         {
             var label = new GUIStyle(GUI.skin.label) { fontSize = 16, normal = { textColor = Color.white } };
             string roomName = _currentRoomIndex < _floorRooms.Count ? _floorRooms[_currentRoomIndex] : "—";
-            GUI.Label(new Rect(10, 10, 600, 26),
-                $"Floor {CurrentFloor} · Room {_currentRoomIndex + 1}/{_floorRooms.Count} · {roomName}", label);
+            GUI.Label(new Rect(10, 10, 700, 26),
+                $"Floor {CurrentFloor}/{maxFloor} · Room {_currentRoomIndex + 1}/{_floorRooms.Count} · {roomName} · 难度 ×{FloorScale:0.0}", label);
             GUI.Label(new Rect(10, 34, 700, 26),
-                "WASD移动 · Space/左键普攻 · R/右键技能 · Q切换武器 · E购买 · 走入绿门进入下一间", label);
+                "WASD移动 · Space/左键普攻 · R/右键技能 · Q切换武器 · E购买/装备 · 走入绿门进入下一间", label);
             if (_playerHealth != null)
             {
                 GUI.Label(new Rect(10, 58, 560, 26),
@@ -857,7 +948,7 @@ namespace Game.Dev
                 var bannerStyle = new GUIStyle(GUI.skin.label)
                 {
                     fontSize = 24, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter,
-                    normal = { textColor = new Color(1f, 0.9f, 0.4f) }
+                    normal   = { textColor = new Color(1f, 0.9f, 0.4f) }
                 };
                 GUI.Label(new Rect(0, Screen.height * 0.18f, Screen.width, 40), _bannerMessage, bannerStyle);
             }
@@ -866,7 +957,7 @@ namespace Game.Dev
         private void DrawWeaponHUD()
         {
             if (_player == null) return;
-            var handler = _player.GetComponent<Game.Player.PlayerWeaponHandler>();
+            var handler = _player.GetComponent<PlayerWeaponHandler>();
             if (handler == null) return;
 
             float panelX = Screen.width - 340f;
@@ -879,42 +970,41 @@ namespace Game.Dev
             var titleStyle = new GUIStyle(GUI.skin.label)
             {
                 fontSize = 13, fontStyle = FontStyle.Bold,
-                normal = { textColor = new Color(0.9f, 0.9f, 0.6f) }
+                normal   = { textColor = new Color(0.9f, 0.9f, 0.6f) }
             };
             GUI.Label(new Rect(panelX, panelY, panelW, 20), "── 武器栏 (Q切换) ──", titleStyle);
 
             for (int i = 0; i < 2; i++)
             {
-                var wi = handler.Slots[i];
+                var wi     = handler.Slots[i];
                 bool active = handler.ActiveSlotIndex == i;
-                float y = panelY + 20f + i * 24f;
+                float y    = panelY + 20f + i * 24f;
 
                 Color slotColor = wi == null ? new Color(0.5f, 0.5f, 0.5f)
                                 : WeaponData.GetRarityColor(wi.Data.rarity);
                 if (!active) slotColor *= 0.65f;
 
-                string prefix = active ? "▶" : "  ";
+                string prefix   = active ? "▶" : "  ";
                 string slotText = wi == null
                     ? $"{prefix} [{i + 1}] 空"
                     : $"{prefix} [{i + 1}] {wi.ShortName}  {wi.CategoryLabel}  {wi.EffectiveDamage:0}伤害  {wi.Data.attackSpeed:0.0}/s";
 
                 var slotStyle = new GUIStyle(GUI.skin.label)
                 {
-                    fontSize = active ? 13 : 12,
+                    fontSize  = active ? 13 : 12,
                     fontStyle = active ? FontStyle.Bold : FontStyle.Normal,
-                    normal = { textColor = slotColor }
+                    normal    = { textColor = slotColor }
                 };
                 GUI.Label(new Rect(panelX, y, panelW, 22), slotText, slotStyle);
             }
 
-            // 技能冷却条
             var active_wi = handler.ActiveWeapon;
             if (active_wi?.Data?.HasSkill == true)
             {
-                float skillY = panelY + 70f;
+                float  skillY    = panelY + 70f;
                 string skillName = active_wi.Data.skill.skillName;
-                float cdRem = handler.SkillCooldownRemaining;
-                bool ready = handler.SkillReady;
+                float  cdRem     = handler.SkillCooldownRemaining;
+                bool   ready     = handler.SkillReady;
 
                 string skillLabel = ready
                     ? $"技能: {skillName} [就绪!] (R/右键)"
@@ -927,13 +1017,48 @@ namespace Game.Dev
                 };
                 GUI.Label(new Rect(panelX, skillY, panelW, 20), skillLabel, skillStyle);
 
-                // 冷却进度条
                 float barW = panelW - 4f;
                 float barY = skillY + 20f;
                 FillRect(new Rect(panelX, barY, barW, 8), new Color(0.3f, 0.3f, 0.3f));
                 float fill = 1f - handler.SkillCooldownRatio;
                 FillRect(new Rect(panelX, barY, barW * fill, 8), ready ? new Color(0.3f, 0.9f, 0.3f) : new Color(0.3f, 0.5f, 1f));
             }
+        }
+
+        private void DrawFloorComplete()
+        {
+            FillRect(new Rect(0, 0, Screen.width, Screen.height), new Color(0f, 0f, 0f, 0.65f));
+
+            var titleStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 48, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter,
+                normal   = { textColor = new Color(0.35f, 1f, 0.5f) }
+            };
+            GUI.Label(new Rect(0, Screen.height * 0.2f, Screen.width, 70), $"第 {CurrentFloor} 层清除！", titleStyle);
+
+            var subStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 20, alignment = TextAnchor.MiddleCenter,
+                normal   = { textColor = Color.white }
+            };
+            GUI.Label(new Rect(0, Screen.height * 0.36f, Screen.width, 30),
+                $"已获得 +{clearReward} 解锁货币   当前金币: {RunCoins}", subStyle);
+
+            var nextFloor = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 16, alignment = TextAnchor.MiddleCenter,
+                normal   = { textColor = new Color(1f, 0.8f, 0.5f) }
+            };
+            GUI.Label(new Rect(0, Screen.height * 0.44f, Screen.width, 26),
+                $"下一层难度: ×{1f + CurrentFloor * 0.3f:0.0}  (HP↑ ATK↑)", nextFloor);
+
+            float btnX = Screen.width / 2f - 140f;
+            float btnY = Screen.height * 0.52f;
+            var btn = new GUIStyle(GUI.skin.button) { fontSize = 20, fontStyle = FontStyle.Bold };
+            if (GUI.Button(new Rect(btnX, btnY, 280, 50), $"进入第 {CurrentFloor + 1} 层 ▶", btn))
+                AdvanceFloor();
+            if (GUI.Button(new Rect(btnX, btnY + 60f, 280, 50), "返回主菜单", btn))
+                EnterMenu();
         }
 
         private void DrawEndScreen(string title, Color color, bool victory)
@@ -943,7 +1068,7 @@ namespace Game.Dev
             var bigStyle = new GUIStyle(GUI.skin.label)
             {
                 fontSize = 56, alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold,
-                normal = { textColor = color }
+                normal   = { textColor = color }
             };
             GUI.Label(new Rect(0, Screen.height * 0.25f, Screen.width, 80), title, bigStyle);
 
@@ -951,16 +1076,14 @@ namespace Game.Dev
             {
                 var reward = new GUIStyle(GUI.skin.label) { fontSize = 20, alignment = TextAnchor.MiddleCenter, normal = { textColor = Color.white } };
                 GUI.Label(new Rect(0, Screen.height * 0.38f, Screen.width, 40),
-                    $"+{clearReward} Unlock Currency   (Total: {_persistent.UnlockCurrency})", reward);
+                    $"全部 {maxFloor} 层通关！   +{clearReward} 解锁货币   (合计: {_persistent.UnlockCurrency})", reward);
             }
 
             float btnX = Screen.width / 2f - 140f;
             float btnY = Screen.height * 0.55f;
             var btnStyle = new GUIStyle(GUI.skin.button) { fontSize = 18 };
-            if (GUI.Button(new Rect(btnX, btnY, 280, 42), "RESTART SAME HERO", btnStyle))
-                StartRun();
-            if (GUI.Button(new Rect(btnX, btnY + 54, 280, 42), "BACK TO MAIN MENU", btnStyle))
-                EnterMenu();
+            if (GUI.Button(new Rect(btnX, btnY,       280, 42), "RESTART SAME HERO", btnStyle)) StartRun();
+            if (GUI.Button(new Rect(btnX, btnY + 54f, 280, 42), "BACK TO MAIN MENU", btnStyle)) EnterMenu();
         }
     }
 }

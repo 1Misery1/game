@@ -38,12 +38,10 @@ namespace Game.Combat
                 : Mathf.Max(1f, info.Amount - defense);
 
             _current = Mathf.Max(0f, _current - dmg);
-            OnDamaged?.Invoke(info);
+            // Pass actual dealt damage so subscribers (e.g. floating numbers) show correct values
+            OnDamaged?.Invoke(new DamageInfo { Amount = dmg, Type = info.Type, IsCrit = info.IsCrit, Source = info.Source });
 
-            if (_current <= 0f)
-            {
-                OnDied?.Invoke();
-            }
+            if (_current <= 0f) OnDied?.Invoke();
         }
 
         public void Heal(float amount)
