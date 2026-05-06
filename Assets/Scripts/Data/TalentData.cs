@@ -16,6 +16,10 @@ namespace Game.Data
         [Header("Stacking")]
         public bool stackable = true;
         public int maxStacks = 99;
+
+        [Header("Duration")]
+        [Tooltip("-1 = permanent; >0 = expires after that many rooms")]
+        public int roomDuration = -1;
     }
 
     [System.Serializable]

@@ -22,16 +22,12 @@ namespace Game.Dev
 
         private enum State { Menu, Playing, FloorComplete, Victory, Death }
 
-        // Room pool weights (Boss handled separately, always last)
+        // 战斗房间权重（Shop 单独固定插入，Boss 固定最后）
         private static readonly (string type, float weight)[] RoomPool =
         {
-            ("Monster", 4.0f),
-            ("Talent",  2.0f),
+            ("Monster", 5.0f),
             ("Coin",    2.0f),
-            ("Shop",    1.5f),
-            ("Mystery", 1.5f),
-            ("Elite",   1.2f),
-            ("Weapon",  1.5f),
+            ("Talent",  2.0f),
         };
 
         public int RunCoins      { get; private set; }
@@ -60,6 +56,18 @@ namespace Game.Dev
         private string _bossName;
         private int    _enemiesKilled;
         private float  _totalDamageDealt;
+
+        // Talent tracking
+        private sealed class ActiveTalent
+        {
+            public TalentData Data;
+            public object     Source   = new object();
+            public int        RoomsLeft; // -1 = permanent
+            public bool       IsPermanent => RoomsLeft < 0;
+        }
+        private readonly List<ActiveTalent> _activeTalents = new List<ActiveTalent>();
+        private TalentData _pendingTalent;
+        private const int  MaxTalents = 2;
 
         // --------------------------------------------------------------------
         //  Startup
@@ -188,7 +196,7 @@ namespace Game.Dev
             CurrentFloor++;
             _floorRooms = GenerateFloor();
             if (_currentRoomRoot != null) { Destroy(_currentRoomRoot); _currentRoomRoot = null; }
-            if (_player != null) _player.transform.position = Vector3.zero;
+            if (_player != null) _player.transform.position = new Vector3(-arenaHalfWidth + 0.8f, 0f, 0f);
             LoadRoom(0);
             _state = State.Playing;
             ShowBanner($"第 {CurrentFloor} 层 — 难度 ×{FloorScale:0.0}");
@@ -212,6 +220,8 @@ namespace Game.Dev
             _bossName         = null;
             _enemiesKilled    = 0;
             _totalDamageDealt = 0f;
+            _activeTalents.Clear();
+            _pendingTalent    = null;
         }
 
         // --------------------------------------------------------------------
@@ -220,11 +230,13 @@ namespace Game.Dev
 
         private List<string> GenerateFloor()
         {
-            float total = 0f;
+            float total      = 0f;
             foreach (var e in RoomPool) total += e.weight;
 
-            var rooms = new List<string>();
-            for (int i = 0; i < nonBossRoomCount; i++)
+            // 战斗房间数随层数递增：Floor1=4, Floor2=5, Floor3=6
+            int combatCount  = nonBossRoomCount + (CurrentFloor - 1);
+            var rooms        = new List<string>();
+            for (int i = 0; i < combatCount; i++)
             {
                 float roll = Random.value * total;
                 float acc  = 0f;
@@ -234,6 +246,11 @@ namespace Game.Dev
                     if (roll <= acc) { rooms.Add(e.type); break; }
                 }
             }
+
+            // 商店随机插入（不放在第一个和最后一个位置）
+            int shopPos = rooms.Count > 1 ? Random.Range(1, rooms.Count) : 0;
+            rooms.Insert(shopPos, "Shop");
+
             rooms.Add("Boss");
             return rooms;
         }
@@ -242,13 +259,17 @@ namespace Game.Dev
         {
             if (_currentRoomRoot != null) Destroy(_currentRoomRoot);
             _currentRoomIndex = index;
-            if (_player != null) _player.transform.position = Vector3.zero;
+            // 玩家重置到左侧起点
+            if (_player != null)
+                _player.transform.position = new Vector3(-arenaHalfWidth + 0.8f, 0f, 0f);
 
             if (index >= _floorRooms.Count)
             {
                 TriggerVictory();
                 return;
             }
+
+            OnNewRoomEntered(); // 限时天赋倒计时
 
             var type = _floorRooms[index];
             _currentRoomRoot = new GameObject($"Room_{index}_{type}");
@@ -258,9 +279,6 @@ namespace Game.Dev
                 case "Talent":  BuildTalentRoom();  break;
                 case "Coin":    BuildCoinRoom();    break;
                 case "Shop":    BuildShopRoom();    break;
-                case "Mystery": BuildMysteryRoom(); break;
-                case "Elite":   BuildEliteRoom();   break;
-                case "Weapon":  BuildWeaponRoom();  break;
                 case "Boss":    BuildBossRoom();    break;
             }
         }
@@ -365,128 +383,59 @@ namespace Game.Dev
 
         private void BuildMonsterRoom()
         {
-            int remaining = 3;
-            float[] angles = { Mathf.PI * 0.5f, Mathf.PI * (0.5f + 2f / 3f), Mathf.PI * (0.5f + 4f / 3f) };
-            for (int i = 0; i < 3; i++)
+            ShowBanner("消灭所有敌人 → 获得随机武器");
+            MaybeAddAltar();
+            int count = GetRoomEnemyCount();
+            SpawnRoomWave(count, () =>
             {
-                var pos = new Vector3(Mathf.Cos(angles[i]) * 3.5f, Mathf.Sin(angles[i]) * 2.2f, 0f);
-                SpawnRandomNormalEnemy(pos, () => { remaining--; if (remaining <= 0) OpenDoorToNext(); });
-            }
-        }
-
-        private void BuildEliteRoom()
-        {
-            if (_player == null) return;
-            int remaining = 3; // 精英 + 2初始小怪
-            System.Action dec = () => { remaining--; if (remaining <= 0) OpenDoorToNext(); };
-
-            switch (Random.Range(0, 4))
-            {
-                case 0: EliteRoom_Commander(dec);    break;
-                case 1: EliteRoom_Witch(dec);        break;
-                case 2: EliteRoom_PoisonShaman(dec); break;
-                case 3: EliteRoom_Necromancer(dec);  break;
-            }
-        }
-
-        // 腐败士官 + 2腐败盾士 — 光环让盾卫极度坚韧
-        private void EliteRoom_Commander(System.Action dec)
-        {
-            ShowBanner("精英 — 腐败士官领军！战斗光环已强化盾卫！");
-            var p    = _player.transform;
-            var root = _currentRoomRoot.transform;
-            var elite = EnemyFactory.SpawnCommander(new Vector3(0f, 2f, 0f), p, root);
-            RegisterEnemy(elite, 15, dec);
-            Vector3[] pos = { new Vector3(-3f, -1.5f, 0f), new Vector3(3f, -1.5f, 0f) };
-            foreach (var mp in pos)
-                RegisterEnemy(EnemyFactory.SpawnShieldGuard(mp, p, root), 6, dec);
-        }
-
-        // 女巫 + 2初始蝙蝠 — 女巫持续召唤蝙蝠群
-        private void EliteRoom_Witch(System.Action dec)
-        {
-            ShowBanner("精英 — 恶毒女巫降临！蝙蝠群随时增援！");
-            var p    = _player.transform;
-            var root = _currentRoomRoot.transform;
-            var elite = EnemyFactory.SpawnWitch(new Vector3(0f, 2f, 0f), p, root, spawnPos =>
-            {
-                var bat = EnemyFactory.SpawnBat(spawnPos, p, root);
-                RegisterEnemy(bat, 3, () => { }); // 召唤蝙蝠不计入房间计数
-                return bat;
+                var offers = GetRandomWeaponOffers(1);
+                if (offers.Length > 0)
+                    SpawnWeaponPedestal(new Vector3(5f, 0f, 0f), offers[0]);
+                ShowBanner("战斗胜利！武器奖励已出现！");
+                OpenRightDoor();
             });
-            RegisterEnemy(elite, 15, dec);
-            Vector3[] pos = { new Vector3(-3f, -1.5f, 0f), new Vector3(3f, -1.5f, 0f) };
-            foreach (var mp in pos)
-                RegisterEnemy(EnemyFactory.SpawnBat(mp, p, root), 3, dec);
         }
 
-        // 毒蛇祭司 + 2毒蜘蛛 — 祭司持续强化蜘蛛，投放毒池封路
-        private void EliteRoom_PoisonShaman(System.Action dec)
-        {
-            ShowBanner("精英 — 毒蛇祭司现身！毒蜘蛛已受到祝福强化！");
-            var p    = _player.transform;
-            var root = _currentRoomRoot.transform;
-            var elite = EnemyFactory.SpawnPoisonShaman(new Vector3(0f, 2f, 0f), p, root);
-            var ai    = elite.GetComponent<PoisonShamanAI>();
-            ai.SpawnPoisonPuddleCallback = pos =>
-                EnemyFactory.SpawnPoisonPool(pos, 5f, 4f, 1.5f, root, elite);
-            RegisterEnemy(elite, 15, dec);
-            Vector3[] pos2 = { new Vector3(-3f, -1.5f, 0f), new Vector3(3f, -1.5f, 0f) };
-            foreach (var mp in pos2)
-                RegisterEnemy(EnemyFactory.SpawnPoisonSpider(mp, p, root), 3, dec);
-        }
-
-        // 死灵术士 + 2骷髅 — 术士回血自保，不断召唤骷髅援军
-        private void EliteRoom_Necromancer(System.Action dec)
-        {
-            ShowBanner("精英 — 死灵术士登场！骷髅军团不断复活！");
-            var p    = _player.transform;
-            var root = _currentRoomRoot.transform;
-            var elite = EnemyFactory.SpawnNecromancer(new Vector3(0f, 2f, 0f), p, root);
-            var ai    = elite.GetComponent<NecromancerAI>();
-            ai.SpawnSkeletonCallback = pos =>
-            {
-                var sk = EnemyFactory.SpawnSkeleton(pos, p, root);
-                RegisterEnemy(sk, 3, () => { }); // 召唤骷髅不计入房间计数
-                return sk;
-            };
-            RegisterEnemy(elite, 15, dec);
-            Vector3[] pos2 = { new Vector3(-3f, -1.5f, 0f), new Vector3(3f, -1.5f, 0f) };
-            foreach (var mp in pos2)
-                RegisterEnemy(EnemyFactory.SpawnSkeleton(mp, p, root), 3, dec);
-        }
 
         private void BuildTalentRoom()
         {
-            int remaining = 2;
-            Vector3[] positions = { new Vector3(-2.5f, 2f, 0f), new Vector3(2.5f, 2f, 0f) };
-            for (int i = 0; i < 2; i++)
-                SpawnRandomNormalEnemy(positions[i], () => { remaining--; if (remaining <= 0) DropTalentChoices(); });
+            ShowBanner("消灭所有敌人 → 选择一个天赋");
+            MaybeAddAltar();
+            int count = GetRoomEnemyCount();
+            SpawnRoomWave(count, DropTalentChoices);
         }
 
-        private static readonly (string name, string desc, StatType stat, ModifierOp op, float value, Color color)[] TalentPool =
+        // (name, desc, stat, op, value, color, roomDuration)  -1 = permanent
+        private static readonly (string name, string desc, StatType stat, ModifierOp op, float value, Color color, int rooms)[] TalentPool =
         {
-            ("强力",   "+20% 攻击力",   StatType.Attack,            ModifierOp.PercentMul, 0.20f, new Color(1f,   0.40f, 0.40f)),
-            ("疾风",   "+25% 移动速度", StatType.MoveSpeed,         ModifierOp.PercentMul, 0.25f, new Color(0.4f, 0.90f, 1f  )),
-            ("活力",   "+50 最大生命",  StatType.MaxHP,             ModifierOp.Flat,       50f,   new Color(1f,   0.90f, 0.30f)),
-            ("守护",   "+5 防御",       StatType.Defense,           ModifierOp.Flat,        5f,   new Color(0.4f, 0.70f, 1f  )),
-            ("鹰眼",   "+15% 暴击率",   StatType.CritRate,          ModifierOp.Flat,       0.15f, new Color(1f,   0.85f, 0.20f)),
-            ("致命",   "+25% 暴击伤害", StatType.CritDamage,        ModifierOp.Flat,       0.25f, new Color(1f,   0.50f, 0.10f)),
-            ("狂战",   "+15% 攻击速度", StatType.AttackSpeed,       ModifierOp.PercentMul, 0.15f, new Color(1f,   0.30f, 0.60f)),
-            ("奥能",   "+30% 技能强度", StatType.SkillPower,        ModifierOp.PercentMul, 0.30f, new Color(0.7f, 0.40f, 1f  )),
-            ("敏捷",   "+10% 冷却缩减", StatType.CooldownReduction, ModifierOp.Flat,       0.10f, new Color(0.5f, 1f,   0.90f)),
-            ("财富",   "+30% 金币获取", StatType.CoinGain,          ModifierOp.PercentMul, 0.30f, new Color(1f,   0.85f, 0.10f)),
-            ("铁壁",   "+10 防御",      StatType.Defense,           ModifierOp.Flat,       10f,   new Color(0.3f, 0.60f, 1f  )),
-            ("泰坦",   "+100 最大生命", StatType.MaxHP,             ModifierOp.Flat,      100f,   new Color(0.9f, 0.40f, 0.40f)),
-            ("冲劲",   "+20% 移动速度", StatType.MoveSpeed,         ModifierOp.PercentMul, 0.20f, new Color(0.3f, 0.95f, 0.50f)),
-            ("猛力",   "+30% 攻击力",   StatType.Attack,            ModifierOp.PercentMul, 0.30f, new Color(1f,   0.20f, 0.20f)),
+            // ── 永久天赋 ────────────────────────────────────────────
+            ("强力",   "+20% 攻击力",         StatType.Attack,            ModifierOp.PercentMul, 0.20f, new Color(1f,   0.40f, 0.40f), -1),
+            ("疾风",   "+25% 移动速度",       StatType.MoveSpeed,         ModifierOp.PercentMul, 0.25f, new Color(0.4f, 0.90f, 1f  ), -1),
+            ("活力",   "+50 最大生命",        StatType.MaxHP,             ModifierOp.Flat,       50f,   new Color(1f,   0.90f, 0.30f), -1),
+            ("守护",   "+5 防御",             StatType.Defense,           ModifierOp.Flat,        5f,   new Color(0.4f, 0.70f, 1f  ), -1),
+            ("鹰眼",   "+15% 暴击率",         StatType.CritRate,          ModifierOp.Flat,       0.15f, new Color(1f,   0.85f, 0.20f), -1),
+            ("致命",   "+25% 暴击伤害",       StatType.CritDamage,        ModifierOp.Flat,       0.25f, new Color(1f,   0.50f, 0.10f), -1),
+            ("狂战",   "+15% 攻击速度",       StatType.AttackSpeed,       ModifierOp.PercentMul, 0.15f, new Color(1f,   0.30f, 0.60f), -1),
+            ("奥能",   "+30% 技能强度",       StatType.SkillPower,        ModifierOp.PercentMul, 0.30f, new Color(0.7f, 0.40f, 1f  ), -1),
+            ("敏捷",   "+10% 冷却缩减",       StatType.CooldownReduction, ModifierOp.Flat,       0.10f, new Color(0.5f, 1f,   0.90f), -1),
+            ("财富",   "+30% 金币获取",       StatType.CoinGain,          ModifierOp.PercentMul, 0.30f, new Color(1f,   0.85f, 0.10f), -1),
+            ("铁壁",   "+10 防御",            StatType.Defense,           ModifierOp.Flat,       10f,   new Color(0.3f, 0.60f, 1f  ), -1),
+            ("泰坦",   "+100 最大生命",       StatType.MaxHP,             ModifierOp.Flat,      100f,   new Color(0.9f, 0.40f, 0.40f), -1),
+            ("冲劲",   "+20% 移动速度",       StatType.MoveSpeed,         ModifierOp.PercentMul, 0.20f, new Color(0.3f, 0.95f, 0.50f), -1),
+            ("猛力",   "+30% 攻击力",         StatType.Attack,            ModifierOp.PercentMul, 0.30f, new Color(1f,   0.20f, 0.20f), -1),
+            // ── 限时天赋（持续若干个房间后消失）──────────────────────
+            ("爆发",   "+80% 攻击力 (3房)",   StatType.Attack,            ModifierOp.PercentMul, 0.80f, new Color(1f,   0.05f, 0.05f),  3),
+            ("急速",   "+50% 攻速 (3房)",     StatType.AttackSpeed,       ModifierOp.PercentMul, 0.50f, new Color(0.9f, 0.55f, 1f  ),  3),
+            ("护甲",   "+25 防御 (4房)",      StatType.Defense,           ModifierOp.Flat,       25f,   new Color(0.5f, 0.80f, 1f  ),  4),
+            ("暴走",   "+35% 暴击率 (3房)",   StatType.CritRate,          ModifierOp.Flat,       0.35f, new Color(1f,   0.95f, 0.05f),  3),
         };
 
-        private (string name, string desc, StatType stat, ModifierOp op, float value, Color color)[] PickRandomTalents(int count)
+        private (string name, string desc, StatType stat, ModifierOp op, float value, Color color, int rooms)[]
+            PickRandomTalents(int count)
         {
             var indices = new List<int>();
             for (int i = 0; i < TalentPool.Length; i++) indices.Add(i);
-            var result = new (string, string, StatType, ModifierOp, float, Color)[Mathf.Min(count, TalentPool.Length)];
+            var result  = new (string, string, StatType, ModifierOp, float, Color, int)[Mathf.Min(count, TalentPool.Length)];
             for (int i = 0; i < result.Length; i++)
             {
                 int ri    = Random.Range(0, indices.Count);
@@ -502,14 +451,15 @@ namespace Game.Dev
             var pickups = new List<TalentPickup>();
             foreach (var def in picks)
             {
-                var talent = ScriptableObject.CreateInstance<TalentData>();
-                talent.talentName  = def.name;
-                talent.description = def.desc;
+                var talent            = ScriptableObject.CreateInstance<TalentData>();
+                talent.talentName     = def.name;
+                talent.description    = def.desc;
+                talent.roomDuration   = def.rooms;
                 talent.modifiers.Add(new StatModifierEntry { stat = def.stat, op = def.op, value = def.value });
                 pickups.Add(SpawnTalentOrb(talent, def.color));
             }
             for (int i = 0; i < pickups.Count; i++)
-                pickups[i].transform.position = new Vector3(-3.5f + 3.5f * i, -2.2f, 0f);
+                pickups[i].transform.position = new Vector3(-3.5f + 3.5f * i, 0f, 0f);
 
             var snapshot = new List<TalentPickup>(pickups);
             foreach (var p in snapshot)
@@ -520,60 +470,111 @@ namespace Game.Dev
                     ApplyTalentToPlayer(chosen);
                     foreach (var other in snapshot)
                         if (other != null && other != self) Destroy(other.gameObject);
-                    OpenDoorToNext();
+                    OpenRightDoor();
                 };
             }
         }
 
         private void BuildCoinRoom()
         {
-            int remaining = 5;
-            ShowBanner("COIN ROOM — collect all to proceed");
-            for (int i = 0; i < 5; i++)
+            int reward = 30 + CurrentFloor * 10;
+            ShowBanner($"消灭所有敌人 → 获得 {reward} 金币");
+            MaybeAddAltar();
+            int count = GetRoomEnemyCount();
+            SpawnRoomWave(count, () =>
             {
-                var pos  = new Vector3(Random.Range(-5f, 5f), Random.Range(-3f, 3f), 0f);
-                var coin = SpawnCoinPickup(pos, amount: 6);
-                coin.OnPicked += amt =>
-                {
-                    RunCoins += amt;
-                    remaining--;
-                    if (remaining <= 0) OpenDoorToNext();
-                };
-            }
+                RunCoins += reward;
+                ShowBanner($"战斗胜利！获得 {reward} 金币！");
+                OpenRightDoor();
+            });
         }
+
+        // 按稀有度分组的武器工厂（用于商店品质分层）
+        private static readonly System.Func<WeaponInstance>[][] WeaponsByRarity =
+        {
+            new System.Func<WeaponInstance>[] { WeaponLibrary.IronDagger,   WeaponLibrary.IronSword,         WeaponLibrary.IronGreatsword, WeaponLibrary.WoodenBow,    WeaponLibrary.WoodStaff    },
+            new System.Func<WeaponInstance>[] { WeaponLibrary.SteelDagger,  WeaponLibrary.KnightSword,       WeaponLibrary.WarriorGreatsword, WeaponLibrary.HunterBow, WeaponLibrary.MagicStaff   },
+            new System.Func<WeaponInstance>[] { WeaponLibrary.VenomFang,    WeaponLibrary.HolyBlade,         WeaponLibrary.ArmorBreaker,   WeaponLibrary.CloudPiercer, WeaponLibrary.FrostStaff   },
+            new System.Func<WeaponInstance>[] { WeaponLibrary.PhantomBlade, WeaponLibrary.DragonAbyssSword,  WeaponLibrary.DoomBlade,      WeaponLibrary.CelestialBow, WeaponLibrary.ChaosWand    },
+        };
+
+        private WeaponInstance GetWeaponOfRarity(int rarityIndex)
+        {
+            var pool = WeaponsByRarity[Mathf.Clamp(rarityIndex, 0, WeaponsByRarity.Length - 1)];
+            return pool[Random.Range(0, pool.Length)]();
+        }
+
+        private static readonly int[][] ShopRarityTable =
+        {
+            new[] { 0, 0, 1, 1, 2, 3 }, // Floor 1: WW GG B P
+            new[] { 0, 1, 1, 2, 2, 3 }, // Floor 2: W GG BB P
+            new[] { 1, 1, 2, 2, 3, 3 }, // Floor 3: GG BB PP
+        };
+
+        private static readonly int[] WeaponBasePrice = { 15, 25, 40, 65 };
 
         private void BuildShopRoom()
         {
-            ShowBanner("SHOP — walk up and press E to buy");
-            var defs = new (string name, string desc, StatType stat, ModifierOp op, float value, Color color, int price)[]
-            {
-                ("Power Up",   "+20% Attack",     StatType.Attack,    ModifierOp.PercentMul, 0.20f, new Color(1f, 0.4f, 0.4f), 25),
-                ("Swift Feet", "+25% Move Speed", StatType.MoveSpeed, ModifierOp.PercentMul, 0.25f, new Color(0.4f, 0.9f, 1f), 20),
-                ("Vigor",      "+50 Max HP",      StatType.MaxHP,     ModifierOp.Flat,       50f,   new Color(1f, 0.9f, 0.3f), 15),
-            };
+            ShowBanner("商店 — 靠近后按 E 购买 (可略过)");
+            OpenRightDoor(); // 购物可选，直接开右侧门
 
-            for (int i = 0; i < defs.Length; i++)
+            int floorIdx   = Mathf.Clamp(CurrentFloor - 1, 0, ShopRarityTable.Length - 1);
+            int[] rarities = ShopRarityTable[floorIdx];
+            float priceScale = 1f + (CurrentFloor - 1) * 0.3f;
+
+            // 6 把武器分两排排列
+            for (int i = 0; i < rarities.Length; i++)
             {
-                var d = defs[i];
-                var talent = ScriptableObject.CreateInstance<TalentData>();
-                talent.talentName = d.name;
-                talent.description = d.desc;
-                talent.modifiers.Add(new StatModifierEntry { stat = d.stat, op = d.op, value = d.value });
-                var pos = new Vector3(-3.5f + 3.5f * i, 1f, 0f);
-                SpawnShopPedestal(pos, talent, d.color, d.price);
+                float x   = -5.5f + i * 2.2f;
+                float y   = 1.2f;
+                int   ri  = rarities[i];
+                int   price = Mathf.RoundToInt(WeaponBasePrice[ri] * priceScale);
+                var   weapon = GetWeaponOfRarity(ri);
+                SpawnShopWeaponPedestal(new Vector3(x, y, 0f), weapon, price);
             }
 
-            OpenDoorToNext(); // shopping is optional
+            // 天赋抽取台（固定在中下方）
+            int talentDrawPrice = Mathf.RoundToInt(30 * priceScale);
+            SpawnTalentDrawPedestal(new Vector3(0f, -1.5f, 0f), talentDrawPrice);
         }
 
-        private void BuildMysteryRoom()
+        private void SpawnShopWeaponPedestal(Vector3 pos, WeaponInstance weapon, int price)
         {
-            ShowBanner("MYSTERY — approach the altar at your own risk");
-
-            var go = new GameObject("MysteryPedestal");
+            var go = new GameObject("ShopWeapon_" + weapon.Data.weaponName);
             go.transform.SetParent(_currentRoomRoot.transform, true);
-            go.transform.position   = Vector3.zero;
-            go.transform.localScale = new Vector3(0.8f, 0.8f, 1f);
+            go.transform.position   = pos;
+            go.transform.localScale = new Vector3(0.65f, 0.65f, 1f);
+
+            var sr = go.AddComponent<SpriteRenderer>();
+            sr.sprite       = MakeUnitSquareSprite();
+            sr.color        = WeaponData.GetRarityColor(weapon.Data.rarity);
+            sr.sortingOrder = 7;
+
+            var col = go.AddComponent<CircleCollider2D>();
+            col.radius    = 0.9f;
+            col.isTrigger = true;
+
+            var pedestal       = go.AddComponent<WeaponPedestal>();
+            pedestal.Weapon    = weapon;
+            pedestal.OnEquipped = w =>
+            {
+                if (_player == null) return;
+                var handler = _player.GetComponent<PlayerWeaponHandler>();
+                if (handler == null) return;
+                if (RunCoins < price) { ShowBanner($"金币不足！需要 {price} 金币"); return; }
+                RunCoins -= price;
+                handler.EquipWeapon(w, handler.ActiveSlotIndex);
+                ShowBanner($"已购买并装备: {w.Data.weaponName}  (-{price}金币)");
+                Destroy(go);
+            };
+        }
+
+        private void SpawnTalentDrawPedestal(Vector3 pos, int price)
+        {
+            var go = new GameObject("TalentDraw");
+            go.transform.SetParent(_currentRoomRoot.transform, true);
+            go.transform.position   = pos;
+            go.transform.localScale = new Vector3(0.75f, 0.75f, 1f);
 
             var sr = go.AddComponent<SpriteRenderer>();
             sr.sprite       = MakeUnitSquareSprite();
@@ -581,64 +582,35 @@ namespace Game.Dev
             sr.sortingOrder = 7;
 
             var col = go.AddComponent<CircleCollider2D>();
-            col.radius    = 0.7f;
+            col.radius    = 0.9f;
             col.isTrigger = true;
 
-            var mystery = go.AddComponent<MysteryPedestal>();
-            mystery.OnResolved += HandleMystery;
-        }
-
-        private void HandleMystery(MysteryOutcome outcome)
-        {
-            switch (outcome)
+            var shop         = go.AddComponent<ShopPedestal>();
+            var drawn        = GenerateRandomTalent();
+            shop.talent      = drawn;
+            shop.price       = price;
+            shop.GetCoins    = () => RunCoins;
+            shop.SpendCoins  = amt => RunCoins -= amt;
+            shop.OnPurchased = t =>
             {
-                case MysteryOutcome.Lucky:
-                    RunCoins += 25;
-                    ShowBanner("LUCKY!  +25 coins");
-                    break;
-                case MysteryOutcome.Gift:
-                    var gift = GenerateRandomTalent();
-                    ApplyTalentToPlayer(gift);
-                    ShowBanner($"GIFT!  Free talent: {gift.talentName}");
-                    break;
-                case MysteryOutcome.Heal:
-                    if (_playerHealth != null) _playerHealth.Heal(9999f);
-                    ShowBanner("HEALED to full!");
-                    break;
-                case MysteryOutcome.Cursed:
-                    ApplyCurse();
-                    ShowBanner("CURSED!  -15% Max HP");
-                    break;
-            }
-            OpenDoorToNext();
+                ApplyTalentToPlayer(t);
+                ShowBanner($"抽取到天赋：{t.talentName}！");
+                Destroy(go);
+            };
         }
 
-        private void ApplyCurse()
-        {
-            if (_player == null) return;
-            var stats = _player.GetComponent<CharacterStats>();
-            if (stats == null) return;
-            stats.AddModifier(new StatModifier(StatType.MaxHP, ModifierOp.PercentMul, -0.15f, "Mystery_Curse"));
-        }
 
         private TalentData GenerateRandomTalent()
         {
-            var d = TalentPool[Random.Range(0, TalentPool.Length)];
-            var t = ScriptableObject.CreateInstance<TalentData>();
-            t.talentName  = d.name;
-            t.description = d.desc;
+            var d             = TalentPool[Random.Range(0, TalentPool.Length)];
+            var t             = ScriptableObject.CreateInstance<TalentData>();
+            t.talentName      = d.name;
+            t.description     = d.desc;
+            t.roomDuration    = d.rooms;
             t.modifiers.Add(new StatModifierEntry { stat = d.stat, op = d.op, value = d.value });
             return t;
         }
 
-        private void BuildWeaponRoom()
-        {
-            ShowBanner("武器房 — 走近后按 E 装备到当前槽（Q切换槽位）");
-            var offers = GetRandomWeaponOffers(3);
-            for (int i = 0; i < offers.Length; i++)
-                SpawnWeaponPedestal(new Vector3(-3.5f + 3.5f * i, 0.5f, 0f), offers[i]);
-            OpenDoorToNext(); // weapon room is optional
-        }
 
         private void BuildBossRoom()
         {
@@ -716,23 +688,198 @@ namespace Game.Dev
 
         private void ApplyTalentToPlayer(TalentData talent)
         {
-            if (_player == null) return;
+            if (_player == null || talent == null) return;
+
+            if (_activeTalents.Count >= MaxTalents)
+            {
+                _pendingTalent = talent;
+                ShowBanner("天赋已满（上限2个）！请在左下角选择替换");
+                return;
+            }
+
             var stats = _player.GetComponent<CharacterStats>();
-            ModifierApplier.ApplyTalent(stats, talent);
+            var at    = new ActiveTalent { Data = talent, RoomsLeft = talent.roomDuration };
+            foreach (var entry in talent.modifiers)
+                stats.AddModifier(new StatModifier(entry.stat, entry.op, entry.value, at.Source));
+
+            _activeTalents.Add(at);
+
             var hp = _player.GetComponent<Health>();
-            if (hp != null) hp.Heal(9999f);
-            Debug.Log($"[Talent] picked: {talent.talentName}");
+            hp?.Heal(9999f);
+
+            string dur = talent.roomDuration > 0 ? $" ({talent.roomDuration}房)" : "";
+            ShowBanner($"获得天赋：{talent.talentName}{dur}");
         }
 
-        private void OpenDoorToNext()
+        private void ReplaceTalentAt(int index)
+        {
+            if (index < 0 || index >= _activeTalents.Count || _pendingTalent == null) return;
+            var old   = _activeTalents[index];
+            var stats = _player?.GetComponent<CharacterStats>();
+            stats?.RemoveModifiersFrom(old.Source);
+            _activeTalents.RemoveAt(index);
+            var pending = _pendingTalent;
+            _pendingTalent = null;
+            ApplyTalentToPlayer(pending);
+        }
+
+        // ── 战斗房间公共逻辑 ──────────────────────────────────────
+
+        private int GetRoomEnemyCount()
+        {
+            int base_ = 3 + CurrentFloor; // Floor1=4, Floor2=5, Floor3=6
+            return Random.Range(base_, base_ + 2);
+        }
+
+        // 将 count 只敌人横向铺开，混入精英；全部死亡后调用 onAllDead
+        private void SpawnRoomWave(int count, System.Action onAllDead)
+        {
+            if (_player == null) return;
+            float eliteChance = 0.15f + (CurrentFloor - 1) * 0.10f; // 15/25/35%
+
+            int remaining      = count;
+            System.Action dec  = () => { remaining--; if (remaining <= 0) onAllDead(); };
+
+            bool spawnedElite  = false;
+            for (int i = 0; i < count; i++)
+            {
+                float x   = Random.Range(-4f, 6f);
+                float y   = Random.Range(-2.5f, 2.5f);
+                var   pos = new Vector3(x, y, 0f);
+
+                if (!spawnedElite && Random.value < eliteChance)
+                {
+                    spawnedElite = true;
+                    SpawnEliteEnemy(pos, dec);
+                }
+                else
+                {
+                    SpawnRandomNormalEnemy(pos, dec);
+                }
+            }
+        }
+
+        // 在战斗波次中随机生成一种精英怪
+        private void SpawnEliteEnemy(Vector3 pos, System.Action onDied)
+        {
+            if (_player == null) return;
+            var p    = _player.transform;
+            var root = _currentRoomRoot.transform;
+            GameObject elite;
+            switch (Random.Range(0, 4))
+            {
+                case 0:
+                    elite = EnemyFactory.SpawnCommander(pos, p, root);
+                    break;
+                case 1:
+                    elite = EnemyFactory.SpawnWitch(pos, p, root, sp =>
+                    {
+                        var bat = EnemyFactory.SpawnBat(sp, p, root);
+                        RegisterEnemy(bat, 3, () => { });
+                        return bat;
+                    });
+                    break;
+                case 2:
+                    var shaman = EnemyFactory.SpawnPoisonShaman(pos, p, root);
+                    shaman.GetComponent<PoisonShamanAI>().SpawnPoisonPuddleCallback = pp =>
+                        EnemyFactory.SpawnPoisonPool(pp, 5f, 4f, 1.5f, root, shaman);
+                    elite = shaman;
+                    break;
+                default:
+                    var necro = EnemyFactory.SpawnNecromancer(pos, p, root);
+                    necro.GetComponent<NecromancerAI>().SpawnSkeletonCallback = sp =>
+                    {
+                        var sk = EnemyFactory.SpawnSkeleton(sp, p, root);
+                        RegisterEnemy(sk, 3, () => { });
+                        return sk;
+                    };
+                    elite = necro;
+                    break;
+            }
+            ShowBanner("精英怪出现！");
+            RegisterEnemy(elite, 15, onDied);
+        }
+
+        // 15% 概率在当前房间生成神秘祭坛（可选互动）
+        private void MaybeAddAltar()
+        {
+            if (Random.value >= 0.15f) return;
+
+            var go = new GameObject("AltarPedestal");
+            go.transform.SetParent(_currentRoomRoot.transform, true);
+            go.transform.position   = new Vector3(0f, 2.8f, 0f);
+            go.transform.localScale = new Vector3(0.8f, 0.8f, 1f);
+
+            var sr = go.AddComponent<SpriteRenderer>();
+            sr.sprite       = MakeUnitSquareSprite();
+            sr.color        = new Color(0.75f, 0.3f, 0.95f);
+            sr.sortingOrder = 7;
+
+            var col = go.AddComponent<CircleCollider2D>();
+            col.radius    = 0.7f;
+            col.isTrigger = true;
+
+            var mystery = go.AddComponent<MysteryPedestal>();
+            mystery.OnResolved += HandleAltar;
+            ShowBanner("神秘祭坛出现！（可选择互动）");
+        }
+
+        private void HandleAltar(MysteryOutcome outcome)
+        {
+            switch (outcome)
+            {
+                case MysteryOutcome.Lucky:
+                    RunCoins += 25;
+                    ShowBanner("祭坛祝福：+25 金币！");
+                    break;
+                case MysteryOutcome.Gift:
+                    var gift = GenerateRandomTalent();
+                    ApplyTalentToPlayer(gift);
+                    ShowBanner($"祭坛馈赠：天赋 [{gift.talentName}]！");
+                    break;
+                case MysteryOutcome.Heal:
+                    if (_playerHealth != null) _playerHealth.Heal(9999f);
+                    ShowBanner("祭坛治愈：满血复活！");
+                    break;
+                case MysteryOutcome.Cursed:
+                    if (_player != null)
+                    {
+                        var stats = _player.GetComponent<CharacterStats>();
+                        stats?.AddModifier(new StatModifier(StatType.MaxHP, ModifierOp.PercentMul, -0.15f, "Altar_Curse"));
+                    }
+                    ShowBanner("祭坛诅咒：最大生命 -15%！");
+                    break;
+            }
+        }
+
+        // 每进入新房间：限时天赋计数 -1，归零时移除
+        private void OnNewRoomEntered()
+        {
+            if (_player == null) return;
+            var stats = _player.GetComponent<CharacterStats>();
+            for (int i = _activeTalents.Count - 1; i >= 0; i--)
+            {
+                var at = _activeTalents[i];
+                if (at.IsPermanent) continue;
+                at.RoomsLeft--;
+                if (at.RoomsLeft <= 0)
+                {
+                    stats?.RemoveModifiersFrom(at.Source);
+                    _activeTalents.RemoveAt(i);
+                    ShowBanner($"天赋 [{at.Data.talentName}] 已到期消失");
+                }
+            }
+        }
+
+        private void OpenRightDoor()
         {
             if (_currentRoomRoot == null) return;
             if (_currentRoomRoot.transform.Find("Door") != null) return;
 
             var doorGO = new GameObject("Door");
             doorGO.transform.SetParent(_currentRoomRoot.transform, true);
-            doorGO.transform.position   = new Vector3(0f, -arenaHalfHeight + 0.4f, 0f);
-            doorGO.transform.localScale = new Vector3(1.6f, 0.35f, 1f);
+            doorGO.transform.position   = new Vector3(arenaHalfWidth - 0.4f, 0f, 0f);
+            doorGO.transform.localScale = new Vector3(0.35f, 1.8f, 1f); // 竖向出口
 
             var sr = doorGO.AddComponent<SpriteRenderer>();
             sr.sprite       = MakeUnitSquareSprite();
@@ -742,7 +889,7 @@ namespace Game.Dev
             var col = doorGO.AddComponent<BoxCollider2D>();
             col.isTrigger = true;
 
-            var door     = doorGO.AddComponent<DoorTrigger>();
+            var door      = doorGO.AddComponent<DoorTrigger>();
             int nextIndex = _currentRoomIndex + 1;
             door.OnPlayerEntered += () => LoadRoom(nextIndex);
         }
@@ -754,7 +901,7 @@ namespace Game.Dev
         private void SpawnPlayer(HeroData hero)
         {
             _player = new GameObject("Player_" + hero.heroName);
-            _player.transform.position   = Vector3.zero;
+            _player.transform.position   = new Vector3(-arenaHalfWidth + 0.8f, 0f, 0f);
             _player.transform.localScale = new Vector3(0.8f, 0.8f, 1f);
 
             var sr = _player.AddComponent<SpriteRenderer>();
@@ -1159,6 +1306,10 @@ namespace Game.Dev
 
             DrawBossHPBar();
 
+            DrawTalentStatus();
+
+            if (_pendingTalent != null) DrawTalentReplacementOverlay();
+
             if (Time.time < _bannerUntil && !string.IsNullOrEmpty(_bannerMessage))
             {
                 var bannerStyle = new GUIStyle(GUI.skin.label)
@@ -1269,6 +1420,76 @@ namespace Game.Dev
             float fill = 1f - skillHandler.CooldownRatio;
             FillRect(new Rect(panelX, panelY + 20f, barW * fill, 8),
                 ready ? new Color(1f, 0.8f, 0.1f) : new Color(0.5f, 0.45f, 0.2f));
+        }
+
+        private void DrawTalentStatus()
+        {
+            if (_activeTalents.Count == 0) return;
+            float panelX = 10f;
+            float panelY = 126f;
+            float panelW = 220f;
+            float rowH   = 20f;
+            float panelH = _activeTalents.Count * rowH + 8f;
+            FillRect(new Rect(panelX - 4, panelY - 4, panelW + 8, panelH + 8), new Color(0f, 0f, 0f, 0.5f));
+
+            var title = new GUIStyle(GUI.skin.label) { fontSize = 11, normal = { textColor = new Color(0.7f, 0.7f, 0.7f) } };
+            GUI.Label(new Rect(panelX, panelY, panelW, 16), "── 天赋 ──", title);
+
+            for (int i = 0; i < _activeTalents.Count; i++)
+            {
+                var at    = _activeTalents[i];
+                string dur = at.IsPermanent ? "∞" : $"{at.RoomsLeft}房";
+                Color  c   = at.IsPermanent ? new Color(0.9f, 0.9f, 0.6f) : new Color(1f, 0.7f, 0.3f);
+                var st = new GUIStyle(GUI.skin.label) { fontSize = 12, normal = { textColor = c } };
+                GUI.Label(new Rect(panelX, panelY + 16f + i * rowH, panelW, rowH),
+                    $"[{i + 1}] {at.Data.talentName}  ({dur})", st);
+            }
+        }
+
+        private void DrawTalentReplacementOverlay()
+        {
+            FillRect(new Rect(0, 0, Screen.width, Screen.height), new Color(0f, 0f, 0f, 0.72f));
+
+            float cx = Screen.width * 0.5f;
+            float cy = Screen.height * 0.5f;
+
+            var titleStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 24, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter,
+                normal   = { textColor = new Color(1f, 0.85f, 0.2f) }
+            };
+            GUI.Label(new Rect(0, cy - 100f, Screen.width, 36),
+                $"天赋已满！新天赋：{_pendingTalent.talentName}", titleStyle);
+
+            var subStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 16, alignment = TextAnchor.MiddleCenter,
+                normal   = { textColor = Color.white }
+            };
+            GUI.Label(new Rect(0, cy - 60f, Screen.width, 26), "选择替换哪一个（或取消放弃新天赋）", subStyle);
+
+            float btnW = 280f;
+            float btnH = 46f;
+            var   btnStyle = new GUIStyle(GUI.skin.button) { fontSize = 15 };
+
+            for (int i = 0; i < _activeTalents.Count; i++)
+            {
+                var at  = _activeTalents[i];
+                string dur = at.IsPermanent ? "永久" : $"剩{at.RoomsLeft}房";
+                float  y   = cy - 10f + i * (btnH + 10f);
+                if (GUI.Button(new Rect(cx - btnW * 0.5f, y, btnW, btnH),
+                    $"替换：{at.Data.talentName} ({dur})", btnStyle))
+                {
+                    ReplaceTalentAt(i);
+                }
+            }
+
+            float cancelY = cy - 10f + _activeTalents.Count * (btnH + 10f) + 10f;
+            if (GUI.Button(new Rect(cx - btnW * 0.5f, cancelY, btnW, 38),
+                "取消（放弃新天赋）", btnStyle))
+            {
+                _pendingTalent = null;
+            }
         }
 
         private void DrawBossHPBar()
