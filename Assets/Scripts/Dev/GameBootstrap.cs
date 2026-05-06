@@ -56,6 +56,11 @@ namespace Game.Dev
         private string _bannerMessage;
         private float  _bannerUntil;
 
+        private Health _bossHealth;
+        private string _bossName;
+        private int    _enemiesKilled;
+        private float  _totalDamageDealt;
+
         // --------------------------------------------------------------------
         //  Startup
         // --------------------------------------------------------------------
@@ -199,10 +204,14 @@ namespace Game.Dev
             if (_currentRoomRoot != null) Destroy(_currentRoomRoot);
             if (_arenaRoot != null)       Destroy(_arenaRoot);
             if (_player != null)          Destroy(_player);
-            _playerHealth   = null;
+            _playerHealth     = null;
             _currentRoomIndex = 0;
-            _bannerMessage  = null;
-            _bannerUntil    = 0f;
+            _bannerMessage    = null;
+            _bannerUntil      = 0f;
+            _bossHealth       = null;
+            _bossName         = null;
+            _enemiesKilled    = 0;
+            _totalDamageDealt = 0f;
         }
 
         // --------------------------------------------------------------------
@@ -291,7 +300,8 @@ namespace Game.Dev
             AttachSpecialDeathEffect(enemy);
             int c  = Mathf.RoundToInt(baseCoins * FloorScale);
             var hp = enemy.GetComponent<Health>();
-            hp.OnDied += () => { RunCoins += c; PlayerPassiveEvents.RaisePlayerKilledEnemy(); };
+            hp.OnDamaged += dmg => { _totalDamageDealt += dmg.Amount; };
+            hp.OnDied += () => { RunCoins += c; PlayerPassiveEvents.RaisePlayerKilledEnemy(); _enemiesKilled++; };
             hp.OnDied += () => Destroy(enemy);
             hp.OnDied += onDied;
         }
@@ -454,20 +464,46 @@ namespace Game.Dev
                 SpawnRandomNormalEnemy(positions[i], () => { remaining--; if (remaining <= 0) DropTalentChoices(); });
         }
 
+        private static readonly (string name, string desc, StatType stat, ModifierOp op, float value, Color color)[] TalentPool =
+        {
+            ("强力",   "+20% 攻击力",   StatType.Attack,            ModifierOp.PercentMul, 0.20f, new Color(1f,   0.40f, 0.40f)),
+            ("疾风",   "+25% 移动速度", StatType.MoveSpeed,         ModifierOp.PercentMul, 0.25f, new Color(0.4f, 0.90f, 1f  )),
+            ("活力",   "+50 最大生命",  StatType.MaxHP,             ModifierOp.Flat,       50f,   new Color(1f,   0.90f, 0.30f)),
+            ("守护",   "+5 防御",       StatType.Defense,           ModifierOp.Flat,        5f,   new Color(0.4f, 0.70f, 1f  )),
+            ("鹰眼",   "+15% 暴击率",   StatType.CritRate,          ModifierOp.Flat,       0.15f, new Color(1f,   0.85f, 0.20f)),
+            ("致命",   "+25% 暴击伤害", StatType.CritDamage,        ModifierOp.Flat,       0.25f, new Color(1f,   0.50f, 0.10f)),
+            ("狂战",   "+15% 攻击速度", StatType.AttackSpeed,       ModifierOp.PercentMul, 0.15f, new Color(1f,   0.30f, 0.60f)),
+            ("奥能",   "+30% 技能强度", StatType.SkillPower,        ModifierOp.PercentMul, 0.30f, new Color(0.7f, 0.40f, 1f  )),
+            ("敏捷",   "+10% 冷却缩减", StatType.CooldownReduction, ModifierOp.Flat,       0.10f, new Color(0.5f, 1f,   0.90f)),
+            ("财富",   "+30% 金币获取", StatType.CoinGain,          ModifierOp.PercentMul, 0.30f, new Color(1f,   0.85f, 0.10f)),
+            ("铁壁",   "+10 防御",      StatType.Defense,           ModifierOp.Flat,       10f,   new Color(0.3f, 0.60f, 1f  )),
+            ("泰坦",   "+100 最大生命", StatType.MaxHP,             ModifierOp.Flat,      100f,   new Color(0.9f, 0.40f, 0.40f)),
+            ("冲劲",   "+20% 移动速度", StatType.MoveSpeed,         ModifierOp.PercentMul, 0.20f, new Color(0.3f, 0.95f, 0.50f)),
+            ("猛力",   "+30% 攻击力",   StatType.Attack,            ModifierOp.PercentMul, 0.30f, new Color(1f,   0.20f, 0.20f)),
+        };
+
+        private (string name, string desc, StatType stat, ModifierOp op, float value, Color color)[] PickRandomTalents(int count)
+        {
+            var indices = new List<int>();
+            for (int i = 0; i < TalentPool.Length; i++) indices.Add(i);
+            var result = new (string, string, StatType, ModifierOp, float, Color)[Mathf.Min(count, TalentPool.Length)];
+            for (int i = 0; i < result.Length; i++)
+            {
+                int ri    = Random.Range(0, indices.Count);
+                result[i] = TalentPool[indices[ri]];
+                indices.RemoveAt(ri);
+            }
+            return result;
+        }
+
         private void DropTalentChoices()
         {
-            var defs = new (string name, string desc, StatType stat, ModifierOp op, float value, Color color)[]
-            {
-                ("Power Up",   "+20% Attack",     StatType.Attack,    ModifierOp.PercentMul, 0.20f, new Color(1f, 0.4f, 0.4f)),
-                ("Swift Feet", "+25% Move Speed", StatType.MoveSpeed, ModifierOp.PercentMul, 0.25f, new Color(0.4f, 0.9f, 1f)),
-                ("Vigor",      "+50 Max HP",      StatType.MaxHP,     ModifierOp.Flat,       50f,   new Color(1f, 0.9f, 0.3f)),
-            };
-
+            var picks   = PickRandomTalents(3);
             var pickups = new List<TalentPickup>();
-            foreach (var def in defs)
+            foreach (var def in picks)
             {
                 var talent = ScriptableObject.CreateInstance<TalentData>();
-                talent.talentName = def.name;
+                talent.talentName  = def.name;
                 talent.description = def.desc;
                 talent.modifiers.Add(new StatModifierEntry { stat = def.stat, op = def.op, value = def.value });
                 pickups.Add(SpawnTalentOrb(talent, def.color));
@@ -587,16 +623,10 @@ namespace Game.Dev
 
         private TalentData GenerateRandomTalent()
         {
-            var defs = new (string name, StatType stat, ModifierOp op, float value)[]
-            {
-                ("Power Up",   StatType.Attack,    ModifierOp.PercentMul, 0.20f),
-                ("Swift Feet", StatType.MoveSpeed, ModifierOp.PercentMul, 0.25f),
-                ("Vigor",      StatType.MaxHP,     ModifierOp.Flat,       50f),
-                ("Guardian",   StatType.Defense,   ModifierOp.Flat,       5f),
-            };
-            var d = defs[Random.Range(0, defs.Length)];
+            var d = TalentPool[Random.Range(0, TalentPool.Length)];
             var t = ScriptableObject.CreateInstance<TalentData>();
-            t.talentName = d.name;
+            t.talentName  = d.name;
+            t.description = d.desc;
             t.modifiers.Add(new StatModifierEntry { stat = d.stat, op = d.op, value = d.value });
             return t;
         }
@@ -663,14 +693,20 @@ namespace Game.Dev
             var bossSr = boss.GetComponent<SpriteRenderer>();
             var bossHp = boss.GetComponent<Health>();
             var bossTr = boss.transform;
+            _bossHealth = bossHp;
+            _bossName   = boss.name;
             if (bossSr != null)
                 bossHp.OnDamaged += dmg =>
                 {
+                    _totalDamageDealt += dmg.Amount;
                     StartCoroutine(FlashRoutine(bossSr, Color.white, 0.08f));
                     if (bossTr != null) DamageNumbers.Instance?.Show(bossTr.position, dmg.Amount, dmg.IsCrit);
                 };
             bossHp.OnDied += () =>
             {
+                _enemiesKilled++;
+                _bossHealth = null;
+                _bossName   = null;
                 PlayerPassiveEvents.RaisePlayerKilledEnemy();
                 Destroy(boss);
                 if (CurrentFloor >= maxFloor) TriggerVictory();
@@ -1121,6 +1157,8 @@ namespace Game.Dev
 
             DrawWeaponHUD();
 
+            DrawBossHPBar();
+
             if (Time.time < _bannerUntil && !string.IsNullOrEmpty(_bannerMessage))
             {
                 var bannerStyle = new GUIStyle(GUI.skin.label)
@@ -1233,6 +1271,36 @@ namespace Game.Dev
                 ready ? new Color(1f, 0.8f, 0.1f) : new Color(0.5f, 0.45f, 0.2f));
         }
 
+        private void DrawBossHPBar()
+        {
+            if (_bossHealth == null) return;
+            float ratio = Mathf.Clamp01(_bossHealth.Current / _bossHealth.Max);
+            float barW  = Screen.width * 0.5f;
+            float barH  = 18f;
+            float barX  = (Screen.width - barW) * 0.5f;
+            float barY  = Screen.height - 46f;
+
+            FillRect(new Rect(barX - 4, barY - 24, barW + 8, barH + 30), new Color(0f, 0f, 0f, 0.65f));
+
+            var nameStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize  = 14, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter,
+                normal    = { textColor = new Color(1f, 0.35f, 0.35f) }
+            };
+            GUI.Label(new Rect(barX, barY - 22f, barW, 20f), _bossName ?? "BOSS", nameStyle);
+
+            FillRect(new Rect(barX, barY, barW, barH), new Color(0.22f, 0.08f, 0.08f));
+            FillRect(new Rect(barX, barY, barW * ratio, barH), new Color(0.85f, 0.15f, 0.15f));
+
+            var hpStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize  = 12, alignment = TextAnchor.MiddleCenter,
+                normal    = { textColor = Color.white }
+            };
+            GUI.Label(new Rect(barX, barY, barW, barH),
+                $"{Mathf.CeilToInt(_bossHealth.Current)} / {Mathf.CeilToInt(_bossHealth.Max)}", hpStyle);
+        }
+
         private void DrawFloorComplete()
         {
             FillRect(new Rect(0, 0, Screen.width, Screen.height), new Color(0f, 0f, 0f, 0.65f));
@@ -1278,20 +1346,33 @@ namespace Game.Dev
                 fontSize = 56, alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold,
                 normal   = { textColor = color }
             };
-            GUI.Label(new Rect(0, Screen.height * 0.25f, Screen.width, 80), title, bigStyle);
+            GUI.Label(new Rect(0, Screen.height * 0.18f, Screen.width, 80), title, bigStyle);
 
-            if (victory)
+            var subStyle = new GUIStyle(GUI.skin.label)
             {
-                var reward = new GUIStyle(GUI.skin.label) { fontSize = 20, alignment = TextAnchor.MiddleCenter, normal = { textColor = Color.white } };
-                GUI.Label(new Rect(0, Screen.height * 0.38f, Screen.width, 40),
-                    $"全部 {maxFloor} 层通关！   +{clearReward} 解锁货币   (合计: {_persistent.UnlockCurrency})", reward);
-            }
+                fontSize = 18, alignment = TextAnchor.MiddleCenter,
+                normal   = { textColor = Color.white }
+            };
+            if (victory)
+                GUI.Label(new Rect(0, Screen.height * 0.30f, Screen.width, 30),
+                    $"全部 {maxFloor} 层通关！   +{clearReward} 解锁货币   (合计: {_persistent.UnlockCurrency})", subStyle);
+
+            float statsY = Screen.height * (victory ? 0.38f : 0.30f);
+            var statStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 15, alignment = TextAnchor.MiddleCenter,
+                normal   = { textColor = new Color(0.85f, 0.85f, 0.85f) }
+            };
+            GUI.Label(new Rect(0, statsY,       Screen.width, 24), $"通关层数: {CurrentFloor} / {maxFloor}", statStyle);
+            GUI.Label(new Rect(0, statsY + 26f, Screen.width, 24), $"击杀敌人: {_enemiesKilled}", statStyle);
+            GUI.Label(new Rect(0, statsY + 52f, Screen.width, 24), $"总输出伤害: {Mathf.RoundToInt(_totalDamageDealt):N0}", statStyle);
+            GUI.Label(new Rect(0, statsY + 78f, Screen.width, 24), $"剩余金币: {RunCoins}", statStyle);
 
             float btnX = Screen.width / 2f - 140f;
-            float btnY = Screen.height * 0.55f;
+            float btnY = Screen.height * (victory ? 0.62f : 0.58f);
             var btnStyle = new GUIStyle(GUI.skin.button) { fontSize = 18 };
-            if (GUI.Button(new Rect(btnX, btnY,       280, 42), "RESTART SAME HERO", btnStyle)) StartRun();
-            if (GUI.Button(new Rect(btnX, btnY + 54f, 280, 42), "BACK TO MAIN MENU", btnStyle)) EnterMenu();
+            if (GUI.Button(new Rect(btnX, btnY,       280, 42), "再次挑战", btnStyle)) StartRun();
+            if (GUI.Button(new Rect(btnX, btnY + 54f, 280, 42), "返回主菜单", btnStyle)) EnterMenu();
         }
     }
 }
